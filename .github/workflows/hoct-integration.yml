@@ -3,7 +3,23 @@ name: hoct-integration
 on:
   push:
     branches: [main, "feat/**"]
+    paths:
+      - ".github/workflows/hoct-integration.yml"
+      - "pyproject.toml"
+      - "tools/bootstrap_evaluator.sh"
+      - "src/biohub/trackers/**"
+      - "tests/integration/test_hoct_public_contract.py"
+      - "vendor/tracksdata"
+      - "vendor/kaggle-cell-tracking-competition"
   pull_request:
+    paths:
+      - ".github/workflows/hoct-integration.yml"
+      - "pyproject.toml"
+      - "tools/bootstrap_evaluator.sh"
+      - "src/biohub/trackers/**"
+      - "tests/integration/test_hoct_public_contract.py"
+      - "vendor/tracksdata"
+      - "vendor/kaggle-cell-tracking-competition"
   workflow_dispatch:
 
 jobs:
@@ -21,6 +37,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
       - name: Bootstrap evaluator environment
         run: bash tools/bootstrap_evaluator.sh
