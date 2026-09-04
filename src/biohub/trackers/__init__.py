@@ -1,5 +1,10 @@
 """Tracker adapters and compatibility layers."""
 
+from .calibration import (
+    TrackerCalibrationScope,
+    TrackerCalibrationScopeError,
+    calibration_scope_from_protocol,
+)
 from .hoct_analysis import candidate_edges_in_source_detection_space
 from .hoct_compat import (
     HOCT_POINT_API_IMPLEMENTED,
@@ -35,8 +40,11 @@ __all__ = [
     "HOCTCheckpointError",
     "HOCTModelSpec",
     "HOCTPointGraphConfig",
+    "TrackerCalibrationScope",
+    "TrackerCalibrationScopeError",
     "aggregate_candidate_sweep_reports",
     "build_hoct_point_graph",
+    "calibration_scope_from_protocol",
     "candidate_config_id",
     "candidate_edges_in_source_detection_space",
     "checkpoint_sha256",
