@@ -14,6 +14,7 @@ from .registry import (
     append_manifest,
     file_sha256,
     load_manifests,
+    path_sha256,
     write_result,
 )
 
@@ -29,5 +30,6 @@ __all__ = [
     "append_submission_plan",
     "file_sha256",
     "load_manifests",
+    "path_sha256",
     "write_result",
 ]
