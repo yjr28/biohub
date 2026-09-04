@@ -1,0 +1,6 @@
+[submodule "vendor/kaggle-cell-tracking-competition"]
+	path = vendor/kaggle-cell-tracking-competition
+	url = https://github.com/royerlab/kaggle-cell-tracking-competition.git
+[submodule "vendor/tracksdata"]
+	path = vendor/tracksdata
+	url = https://github.com/royerlab/tracksdata.git
