@@ -10,7 +10,7 @@ venv/
 .DS_Store
 
 # Competition data / externally obtained artifacts
-# Never commit restricted competition data to this public repository.
+# Never commit restricted competition data to this repository.
 data/
 *.zarr
 *.zarr/
@@ -32,6 +32,15 @@ predictions/
 submission.csv
 submission_*.csv
 *.parquet
+
+# Private competition intelligence / experiment outcomes
+# Keep novel configs, hypotheses, scores, LB observations, manifests and
+# selection decisions local while the competition is active.
+experiments/manifests.jsonl
+experiments/results/
+experiments/private/
+configs/private/
+leaderboard/
 
 # Local Kaggle credentials / API tokens
 kaggle.json
