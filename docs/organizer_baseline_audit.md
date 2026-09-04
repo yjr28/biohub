@@ -3,7 +3,7 @@
 Pinned organizer revision: `075fc5f5a52d11077f9dc2b074644618f26939e2`  
 Source: https://github.com/royerlab/kaggle-cell-tracking-competition
 
-This audit distinguishes **the public organizer baseline implementation** from **a clean LOEO adaptation of that implementation**. They are not the same experiment.
+This audit distinguishes **the public organizer baseline implementation** from **clean LOEO adaptations of that implementation**. They are not the same experiment.
 
 ## 1. Public organizer baseline facts
 
@@ -31,25 +31,41 @@ Therefore:
 
 That run could be useful as an upper-bound/debug experiment, but it cannot certify clean cross-embryo generalization.
 
-## 3. Holdout-safe adaptation used by this repository
+## 3. Holdout-safe adaptations used by this repository
 
-`biohub.baselines.organizer` creates two different split files for the same organizer fold index:
+`biohub.baselines.organizer` creates two different split files for the same organizer fold index. The **training** split is allowed to expose only training-embryo datasets. The **prediction** split introduces the true LOEO embryo only after checkpoint selection is complete.
 
-### Training split
+Two checkpoint-monitor policies are deliberately kept separate.
+
+### A. `train-embryo-all` — public 3-epoch reference
 
 ```text
-train = all datasets from the training embryo(s)
-test  = the same training-embryo dataset set
+optimizer/train = all datasets from the training embryo
+test/monitor    = the same training-embryo dataset set
 ```
 
-This keeps every held-out-embryo dataset out of the organizer trainer's optimization/checkpoint-selection universe while preserving all available training-embryo datasets for backpropagation.
+This keeps every held-out-embryo dataset out of the organizer trainer while preserving all available training-embryo datasets for backpropagation. The monitor is **not independent** and is therefore appropriate as an implementation/reference monitor, not as evidence for how long to train.
 
-The monitor is intentionally **not** interpreted as independent validation. It exists only because the pinned trainer requires a `test_loader` to choose its saved checkpoint.
+This remains the default so a 3-epoch public-reference run does not silently change protocol.
 
-### Prediction split
+### B. `train-embryo-hash-holdout` — longer/converged training
+
+For a serious longer-trained baseline, using the optimization set itself as the checkpoint monitor can select increasingly overfit epochs. Instead, the repository deterministically reserves a dataset-level subset **inside the training embryo**:
 
 ```text
-train = training-embryo dataset set
+optimizer/train = training-embryo datasets not assigned to nested monitor
+test/monitor    = deterministic nested subset from the same training embryo
+LOEO embryo     = absent from both
+```
+
+Assignment is determined by SHA-256 ranking of `"<monitor_seed>:<dataset>"`. The requested monitor fraction is converted to a dataset count with `ceil`, at least one monitor dataset is required, and at least one optimizer dataset is always preserved. The optimizer and monitor sets are disjoint and their union is exactly the training-embryo dataset universe.
+
+The nested monitor is more defensible for checkpoint selection than `train-embryo-all`, but it is **still not cross-embryo validation**. Crops from one embryo can share biological/acquisition characteristics, so nested-monitor performance must never replace the external A→B / B→A LOEO score.
+
+### Prediction split for both policies
+
+```text
+train = complete training-embryo dataset set
 test  = true LOEO holdout dataset set
 ```
 
@@ -67,7 +83,7 @@ rng = np.random.default_rng()
 
 without an explicit seed. That RNG is initialized from fresh entropy and is not made deterministic merely by calling `np.random.seed(...)` in the worker.
 
-Consequence: the pinned augmentation path is not guaranteed bitwise reproducible from a recorded integer seed. Baseline comparisons involving small score differences should therefore be repeated before treating a tiny change as causal.
+Consequence: the pinned augmentation path is not guaranteed bitwise reproducible from a recorded integer seed. The nested `monitor_seed` controls **dataset partitioning only**; it does not make training stochasticity deterministic. Baseline comparisons involving small score differences should therefore be repeated before treating a tiny change as causal.
 
 ## 5. Defaults that must be recorded explicitly
 
@@ -111,18 +127,27 @@ This dataset-level random split can mix embryo identities and is therefore not a
 Purpose: implementation sanity and comparison with public artifacts.
 
 - reproduce the pinned organizer command/protocol as closely as possible;
+- use the 3-epoch reference separately from converged runs;
 - do **not** call its validation score clean LOEO;
 - public notebook/checkpoint provenance must be tracked separately.
 
-### B. Clean-LOEO organizer adaptation
+### B. Clean-LOEO 3-epoch organizer adaptation
 
-Purpose: trustworthy reference for architecture/error-budget work.
+Purpose: trustworthy minimal reference for architecture/error-budget work.
 
-- train on one embryo direction;
-- prevent held-out embryo from influencing checkpoint selection;
-- infer the held-out embryo only after training;
-- score exact holdout datasets through the pinned official evaluator;
-- run the reverse embryo direction independently.
+- `checkpoint_monitor_policy=train-embryo-all`;
+- held-out embryo never influences checkpoint selection;
+- held-out score exists only after external prediction/evaluation.
+
+### C. Clean-LOEO longer-trained organizer adaptation
+
+Purpose: establish whether the undertrained public model is masking association/detection headroom.
+
+- `checkpoint_monitor_policy=train-embryo-hash-holdout`;
+- reserve a deterministic nested monitor from the training embryo;
+- record monitor fraction, seed, optimizer datasets, and monitor datasets in the experiment manifest;
+- keep the true LOEO embryo completely invisible until the checkpoint is fixed;
+- repeat runs before trusting very small improvements because augmentation remains stochastic.
 
 Architecture and core organizer training/inference code stay unchanged unless a later experiment explicitly declares a modification.
 
