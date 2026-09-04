@@ -6,6 +6,7 @@ from biohub.analysis import prepare_fixed_detection_oracle
 from biohub.trackers import (
     HOCTCandidateSweepError,
     HOCTPointGraphConfig,
+    aggregate_candidate_sweep_reports,
     candidate_config_id,
     evaluate_hoct_candidate_configs,
     expand_candidate_grid,
@@ -98,6 +99,20 @@ def test_expand_grid_is_explicit_and_deterministic_across_both_distance_spaces()
     ]
 
 
+def test_config_id_is_stable_across_dataset_spatial_scale_metadata():
+    first = HOCTPointGraphConfig(
+        distance_threshold_um=3.0,
+        n_neighbors=5,
+        scale_zyx_um=(1.625, 0.40625, 0.40625),
+    )
+    second = HOCTPointGraphConfig(
+        distance_threshold_um=3.0,
+        n_neighbors=5,
+        scale_zyx_um=(2.0, 0.5, 0.5),
+    )
+    assert candidate_config_id(first) == candidate_config_id(second)
+
+
 def test_expand_grid_refuses_to_invent_radius_or_neighbor_values():
     with pytest.raises(HOCTCandidateSweepError, match="n_neighbors"):
         expand_candidate_grid({"physical_um": [2.0]}, scale_zyx_um=(1.0, 1.0, 1.0))
@@ -126,3 +141,45 @@ def test_dominated_configuration_is_removed_from_frontier():
     assert trials[candidate_config_id(dense)].candidate_available_gt_edges == 2
     assert trials[candidate_config_id(dense)].candidate_edges > trials[candidate_config_id(efficient)].candidate_edges
     assert report.pareto_config_ids == (candidate_config_id(efficient),)
+
+
+def test_multi_dataset_aggregation_sums_counts_before_recomputing_recall():
+    detections, oracle = _fixture()
+    configs = [
+        HOCTPointGraphConfig(distance_threshold_voxels=1.1, n_neighbors=1),
+        HOCTPointGraphConfig(distance_threshold_voxels=3.1, n_neighbors=1),
+    ]
+    one = evaluate_hoct_candidate_configs(detections, oracle, configs)
+    aggregate = aggregate_candidate_sweep_reports({"dataset_a": one, "dataset_b": one})
+    one_by_id = {trial.config_id: trial for trial in one.trials}
+    agg_by_id = {trial.config_id: trial for trial in aggregate.trials}
+
+    for config in configs:
+        config_id = candidate_config_id(config)
+        assert agg_by_id[config_id].detections == 2 * one_by_id[config_id].detections
+        assert agg_by_id[config_id].candidate_edges == 2 * one_by_id[config_id].candidate_edges
+        assert agg_by_id[config_id].gt_edges == 2 * one_by_id[config_id].gt_edges
+        assert agg_by_id[config_id].detectable_gt_edges == 2 * one_by_id[config_id].detectable_gt_edges
+        assert (
+            agg_by_id[config_id].candidate_available_gt_edges
+            == 2 * one_by_id[config_id].candidate_available_gt_edges
+        )
+        assert agg_by_id[config_id].candidate_recall_of_detectable == pytest.approx(
+            one_by_id[config_id].candidate_recall_of_detectable
+        )
+
+
+def test_aggregation_refuses_different_config_sets_across_datasets():
+    detections, oracle = _fixture()
+    a = evaluate_hoct_candidate_configs(
+        detections,
+        oracle,
+        [HOCTPointGraphConfig(distance_threshold_voxels=1.1, n_neighbors=1)],
+    )
+    b = evaluate_hoct_candidate_configs(
+        detections,
+        oracle,
+        [HOCTPointGraphConfig(distance_threshold_voxels=3.1, n_neighbors=1)],
+    )
+    with pytest.raises(HOCTCandidateSweepError, match="different candidate-config set"):
+        aggregate_candidate_sweep_reports({"a": a, "b": b})
