@@ -14,16 +14,32 @@ from .hoct_models import (
     checkpoint_sha256,
     verify_hoct_checkpoint,
 )
+from .hoct_sweep import (
+    HOCTCandidateSweepError,
+    HOCTCandidateSweepReport,
+    HOCTCandidateTrial,
+    candidate_config_id,
+    evaluate_hoct_candidate_configs,
+    expand_candidate_grid,
+    pareto_frontier,
+)
 
 __all__ = [
     "HOCT_MODELS",
     "HOCT_POINT_API_IMPLEMENTED",
     "HOCT_REVISION",
+    "HOCTCandidateSweepError",
+    "HOCTCandidateSweepReport",
+    "HOCTCandidateTrial",
     "HOCTCheckpointError",
     "HOCTModelSpec",
     "HOCTPointGraphConfig",
     "build_hoct_point_graph",
+    "candidate_config_id",
     "candidate_edges_in_source_detection_space",
     "checkpoint_sha256",
+    "evaluate_hoct_candidate_configs",
+    "expand_candidate_grid",
+    "pareto_frontier",
     "verify_hoct_checkpoint",
 ]
