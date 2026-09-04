@@ -8,10 +8,9 @@ import csv
 import json
 from pathlib import Path
 
-import tracksdata as td
-
 from biohub.analysis import decompose_fixed_detections
 from biohub.evaluation.official import load_geff, read_estimated_node_count
+from biohub.trackers import candidate_edges_in_source_detection_space
 
 
 def _args() -> argparse.Namespace:
@@ -83,30 +82,12 @@ def _candidate_edges_csv(path: Path | None) -> list[tuple[int, int]] | None:
     return edges
 
 
-def _candidate_edges_geff(path: Path | None) -> list[tuple[int, int]] | None:
-    """Map adapter graph node IDs back to the frozen baseline detection IDs."""
-
+def _candidate_edges_geff(path: Path | None) -> tuple[tuple[int, int], ...] | None:
     if path is None:
         return None
     if not path.exists():
         raise SystemExit(f"candidate GEFF not found: {path}")
-    graph = load_geff(path)
-    if "source_detection_id" not in graph.node_attr_keys():
-        raise SystemExit(
-            "candidate GEFF lacks source_detection_id; it cannot be reconciled with the fixed baseline nodes"
-        )
-    node_id = td.DEFAULT_ATTR_KEYS.NODE_ID
-    source_key = td.DEFAULT_ATTR_KEYS.EDGE_SOURCE
-    target_key = td.DEFAULT_ATTR_KEYS.EDGE_TARGET
-    nodes = graph.node_attrs(attr_keys=[node_id, "source_detection_id"])
-    mapping = dict(zip(nodes[node_id].to_list(), nodes["source_detection_id"].to_list()))
-    edges = graph.edge_attrs(attr_keys=[source_key, target_key])
-    result: list[tuple[int, int]] = []
-    for source, target in zip(edges[source_key].to_list(), edges[target_key].to_list(), strict=True):
-        if source not in mapping or target not in mapping:
-            raise SystemExit(f"candidate edge references missing adapter node: {(source, target)}")
-        result.append((int(mapping[source]), int(mapping[target])))
-    return result
+    return candidate_edges_in_source_detection_space(load_geff(path))
 
 
 def main() -> None:
