@@ -23,7 +23,9 @@ from biohub.detections import load_detection_cache
 from biohub.evaluation.official import load_geff, read_estimated_node_count
 from biohub.experiments import file_sha256
 from biohub.trackers import (
+    TrackerCalibrationScopeError,
     aggregate_candidate_sweep_reports,
+    calibration_scope_from_protocol,
     evaluate_hoct_candidate_configs,
     expand_candidate_grid,
 )
@@ -53,28 +55,6 @@ def _load_object(path: Path, label: str) -> dict:
     if not isinstance(payload, dict):
         raise SystemExit(f"{label} root must be a JSON object: {path}")
     return payload
-
-
-def _calibration_scope(protocol: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    policy = protocol.get("checkpoint_monitor_policy")
-    if policy != "train-embryo-hash-holdout":
-        raise SystemExit(
-            "candidate calibration requires checkpoint_monitor_policy='train-embryo-hash-holdout'; "
-            "the train-embryo-all public-reference monitor is not an independent dataset set"
-        )
-    calibration = tuple(sorted(str(value) for value in protocol.get("checkpoint_monitor_datasets", [])))
-    holdout = tuple(sorted(str(value) for value in protocol.get("holdout_datasets", [])))
-    if not calibration:
-        raise SystemExit("protocol has no checkpoint_monitor_datasets")
-    if not holdout:
-        raise SystemExit("protocol has no holdout_datasets")
-    overlap = set(calibration) & set(holdout)
-    if overlap:
-        raise SystemExit(f"calibration/LOEO holdout overlap is forbidden: {sorted(overlap)}")
-    train = set(str(value) for value in protocol.get("train_datasets", []))
-    if not set(calibration) <= train:
-        raise SystemExit("checkpoint-monitor calibration set is not a subset of declared training datasets")
-    return calibration, holdout
 
 
 def _inventory_rows(inventory: dict) -> dict[str, dict]:
@@ -130,7 +110,11 @@ def main() -> None:
     protocol = _load_object(protocol_path, "protocol")
     inventory = _load_object(inventory_path, "inventory")
     grid = _load_object(grid_path, "candidate grid")
-    calibration_datasets, holdout_datasets = _calibration_scope(protocol)
+    try:
+        scope = calibration_scope_from_protocol(protocol)
+    except TrackerCalibrationScopeError as exc:
+        raise SystemExit(str(exc)) from exc
+    calibration_datasets = scope.calibration_datasets
     inventory_by_name = _inventory_rows(inventory)
 
     pred_dir = args.pred_dir.resolve()
@@ -179,15 +163,11 @@ def main() -> None:
         )
 
     aggregate = aggregate_candidate_sweep_reports(per_dataset)
+    selection_scope = scope.to_dict()
+    selection_scope["selection_from_this_report_allowed"] = True
     payload = {
         "purpose": "training-side HOCT candidate calibration; not LOEO validation",
-        "selection_scope": {
-            "checkpoint_monitor_policy": protocol.get("checkpoint_monitor_policy"),
-            "calibration_datasets": list(calibration_datasets),
-            "forbidden_loeo_holdout_datasets": list(holdout_datasets),
-            "loeo_holdout_used": False,
-            "selection_from_this_report_allowed": True,
-        },
+        "selection_scope": selection_scope,
         "provenance": {
             "protocol_path": str(protocol_path),
             "protocol_sha256": file_sha256(protocol_path),
