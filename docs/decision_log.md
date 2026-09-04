@@ -180,3 +180,36 @@ Candidate recall and learned association quality are different causal layers. Ru
 ### Next gate
 
 Run learned-HOCT/solver calibration only on the frozen candidate shortlist and only on the same training-side monitor datasets. Select and freeze one learned configuration per LOEO direction before evaluating the opposite embryo.
+
+---
+
+## D-0008 — Freeze the learned tracker against a same-scope organizer control before LOEO
+
+**Date:** 2026-09-04  
+**Status:** active
+
+### Decision
+
+Learned association/global-solver selection must be completed entirely on the same training-side nested monitor set used for candidate calibration. Compare every allowed HOCT model/solver trial against the organizer NodeTransformer control on exactly that movie set, using the pinned official metric and a promotion margin declared before execution.
+
+Freeze exactly one winner for the LOEO direction: either one HOCT trial or the organizer control. The opposite embryo may evaluate that frozen winner once, but may not retune or replace it.
+
+### Enforcement
+
+`scripts/run_hoct_learned_calibration.py`:
+
+- consumes only candidate IDs already frozen by Phase 2E;
+- requires a fully explicit learned grid for audited model names, window sizes, solver weights, gap policy, and promotion margin;
+- verifies the training-side monitor and forbidden-LOEO dataset sets match the Phase-2E artifacts;
+- verifies audited HOCT checkpoint SHA-256 values;
+- scores the organizer control and all HOCT trials on the identical monitor set with the pinned official evaluator;
+- promotes HOCT only when its aggregate monitor score clears `organizer_control_score + hoct_promotion_margin`;
+- writes `learned_selection.json` with full provenance and `loeo_may_retune_or_replace_winner=false`.
+
+### Reason
+
+With only two embryos, using the opposite embryo to choose among learned association models would convert the only cross-embryo validation instrument into a tuning set. Requiring a same-scope organizer control also prevents complexity from being rewarded merely for being novel: HOCT must earn promotion on the exact competition objective before consuming scarce LOEO evidence.
+
+### Next gate
+
+Execute the full training-side chain on real competition data for each direction, freeze the Phase-2F winner, and only then run one clean opposite-embryo LOEO evaluation. Subsequent engineering must be driven by the measured bottleneck/error decomposition rather than by reverse-fitting this holdout.

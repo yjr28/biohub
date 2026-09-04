@@ -1,0 +1,24 @@
+{
+  "model_names": [
+    "general_v1",
+    "ctc_v0"
+  ],
+  "window_sizes": [
+    5
+  ],
+  "solver_configs": [
+    {
+      "name": "current-runner-default",
+      "appearance_weight": 0.5,
+      "disappearance_weight": 0.25,
+      "division_weight": 0.25,
+      "node_weight": -10.0,
+      "delta_t_weight": 0.5,
+      "edge_bias": 0.5,
+      "timeout": 600.0,
+      "tracklet_solver": true
+    }
+  ],
+  "hoct_promotion_margin": 0.001,
+  "allow_gap_candidates": false
+}
