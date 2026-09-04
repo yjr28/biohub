@@ -1,17 +1,23 @@
 """Fixed-detection bottleneck decomposition for the Biohub edge metric.
 
-This module does not invent a replacement score. It first runs the pinned
-organizer evaluator so predicted nodes receive the same matching attributes used
-by official scoring. It then asks counterfactual *coverage* questions:
+This module does not invent a replacement score. It runs the pinned organizer
+evaluator so predicted nodes receive the same matching attributes used by
+official scoring, then asks counterfactual *coverage* questions:
 
 * how many GT edges have both endpoint cells represented by matched detections?
 * if a pre-solver candidate edge set is supplied, how many of those detectable
   GT edges are present in the candidate graph?
-* how many GT edges were actually recovered by the official scorer?
+* how many GT edges were actually recovered by the scored baseline?
 
 The resulting gaps are opportunity counts, not alternative leaderboard scores.
 They are intended to decide whether the next unit of work belongs in detection,
 candidate generation, or association/global selection.
+
+Candidate sweeps need one additional distinction: an alternative candidate graph
+does not have to contain the *baseline* selected edges. ``CandidateCoverage``
+therefore measures proposal recall independently of baseline selection, while
+the legacy ``decompose_fixed_detections`` API retains its stricter
+candidate-is-a-superset-of-selected-solution contract.
 """
 
 from __future__ import annotations
@@ -30,6 +36,28 @@ from biohub.evaluation.official import (
 
 class OracleAnalysisError(ValueError):
     """Raised when a decomposition request is ambiguous or internally invalid."""
+
+
+@dataclass(frozen=True)
+class CandidateCoverage:
+    """Candidate-proposal opportunity at already-fixed detections.
+
+    ``candidate_recall_of_detectable`` is the fraction of GT edges whose two
+    endpoint cells are available in the fixed detections that also have at least
+    one corresponding candidate edge. It isolates candidate generation from
+    detection misses. ``candidate_recall_all_gt`` keeps the denominator at all GT
+    edges and is useful for understanding the absolute ceiling.
+    """
+
+    candidate_edges_supplied: int
+    candidate_invalid_node_refs: int
+    gt_edges_candidate_available: int
+    candidate_generation_gap: int
+    candidate_recall_of_detectable: float
+    candidate_recall_all_gt: float
+
+    def to_dict(self) -> dict:
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -120,28 +148,119 @@ def _candidate_gt_coverage(
     return len(candidates), invalid, covered
 
 
-def decompose_fixed_detections(
+@dataclass(frozen=True)
+class FixedDetectionOracleContext:
+    """Official matching state reusable across many candidate configurations.
+
+    Constructing this context executes the pinned organizer evaluator exactly
+    once. Candidate sweeps can then measure any number of alternative proposal
+    sets without repeatedly solving the same node-matching problem.
+    """
+
+    official_row: dict
+    gt_edges: tuple[tuple[int, int], ...]
+    gt_to_pred: dict[int, set[int]]
+    valid_pred_ids: frozenset[int]
+    gt_nodes: int
+    pred_nodes: int
+    matched_gt_nodes: int
+    gt_edges_both_endpoints_available: int
+    gt_edges_source_only_available: int
+    gt_edges_target_only_available: int
+    gt_edges_neither_endpoint_available: int
+
+    @property
+    def gt_edge_count(self) -> int:
+        return len(self.gt_edges)
+
+    @property
+    def detection_unavailable_edges(self) -> int:
+        return self.gt_edge_count - self.gt_edges_both_endpoints_available
+
+    @property
+    def fixed_detection_edge_ceiling_recall(self) -> float:
+        return self.gt_edges_both_endpoints_available / self.gt_edge_count
+
+    @property
+    def fixed_detection_recoverable_edges(self) -> int:
+        return max(
+            0,
+            self.gt_edges_both_endpoints_available - int(self.official_row["edge_tp"]),
+        )
+
+    def measure_candidate_coverage(
+        self,
+        candidate_edges: Iterable[tuple[int, int]],
+    ) -> CandidateCoverage:
+        """Measure proposal coverage without assuming baseline edges are included."""
+
+        candidate_count, invalid_refs, candidate_available = _candidate_gt_coverage(
+            candidate_edges,
+            gt_to_pred=self.gt_to_pred,
+            gt_edges=self.gt_edges,
+            valid_pred_ids=set(self.valid_pred_ids),
+        )
+        detectable = self.gt_edges_both_endpoints_available
+        if candidate_available > detectable:
+            raise OracleAnalysisError("candidate coverage exceeded fixed-detection endpoint coverage")
+        return CandidateCoverage(
+            candidate_edges_supplied=candidate_count,
+            candidate_invalid_node_refs=invalid_refs,
+            gt_edges_candidate_available=candidate_available,
+            candidate_generation_gap=detectable - candidate_available,
+            candidate_recall_of_detectable=(candidate_available / detectable if detectable else 0.0),
+            candidate_recall_all_gt=candidate_available / self.gt_edge_count,
+        )
+
+    def decompose_strict(
+        self,
+        candidate_edges: Iterable[tuple[int, int]] | None = None,
+    ) -> BottleneckDecomposition:
+        """Return legacy decomposition, enforcing selected-edge subset consistency."""
+
+        coverage = self.measure_candidate_coverage(candidate_edges) if candidate_edges is not None else None
+        edge_tp = int(self.official_row["edge_tp"])
+        candidate_to_selected_gap = None
+        if coverage is not None:
+            if edge_tp > coverage.gt_edges_candidate_available:
+                raise OracleAnalysisError(
+                    "Official TP count exceeds GT-edge coverage of candidate_edges; "
+                    "the supplied candidate set cannot contain the selected solution."
+                )
+            candidate_to_selected_gap = coverage.gt_edges_candidate_available - edge_tp
+
+        return BottleneckDecomposition(
+            gt_edges=self.gt_edge_count,
+            official_edge_tp=edge_tp,
+            official_edge_fp=int(self.official_row["edge_fp"]),
+            official_edge_fn=int(self.official_row["edge_fn"]),
+            gt_nodes=self.gt_nodes,
+            pred_nodes=self.pred_nodes,
+            matched_gt_nodes=self.matched_gt_nodes,
+            gt_edges_both_endpoints_available=self.gt_edges_both_endpoints_available,
+            gt_edges_source_only_available=self.gt_edges_source_only_available,
+            gt_edges_target_only_available=self.gt_edges_target_only_available,
+            gt_edges_neither_endpoint_available=self.gt_edges_neither_endpoint_available,
+            detection_unavailable_edges=self.detection_unavailable_edges,
+            fixed_detection_edge_ceiling_recall=self.fixed_detection_edge_ceiling_recall,
+            fixed_detection_recoverable_edges=self.fixed_detection_recoverable_edges,
+            candidate_edges_supplied=(coverage.candidate_edges_supplied if coverage else None),
+            candidate_invalid_node_refs=(coverage.candidate_invalid_node_refs if coverage else None),
+            gt_edges_candidate_available=(coverage.gt_edges_candidate_available if coverage else None),
+            candidate_generation_gap=(coverage.candidate_generation_gap if coverage else None),
+            candidate_to_selected_gap=candidate_to_selected_gap,
+        )
+
+
+def prepare_fixed_detection_oracle(
     pred_graph: td.graph.BaseGraph,
     gt_graph: td.graph.BaseGraph,
     *,
     estimated_total_nodes: float,
-    candidate_edges: Iterable[tuple[int, int]] | None = None,
     scale: tuple[float, float, float] = DEFAULT_SCALE,
     max_distance: float = MAX_DISTANCE_UM,
-) -> BottleneckDecomposition:
-    """Decompose recoverable edge opportunity without changing detections.
-
-    The official evaluator is executed first and mutates ``pred_graph`` by
-    writing official node/edge matching attributes. ``candidate_edges`` should
-    represent the pre-solver/pre-threshold edge proposal set using *predicted
-    graph node IDs*. If omitted, only the detection-vs-selection gap is measured.
-
-    ``fixed_detection_edge_ceiling_recall`` is simply the fraction of GT edges
-    whose two endpoints are represented by official-matched detections. It is a
-    coverage ceiling on edge recall at these detections; it is **not** an
-    adjusted-Jaccard or final-score oracle because FP, count adjustment,
-    topology, and division terms still matter.
-    """
+) -> FixedDetectionOracleContext:
+    """Run official matching once and return reusable fixed-detection state."""
 
     if gt_graph.num_edges() <= 0:
         raise OracleAnalysisError("GT graph has no edges; edge bottleneck decomposition is undefined")
@@ -174,37 +293,11 @@ def decompose_fixed_detections(
         else:
             neither += 1
 
-    gt_edge_count = len(edges)
-    unavailable = gt_edge_count - both
-    edge_tp = int(official_row["edge_tp"])
-    fixed_detection_gap = max(0, both - edge_tp)
-
-    candidate_count = invalid_refs = candidate_available = None
-    candidate_generation_gap = candidate_to_selected_gap = None
-    if candidate_edges is not None:
-        candidate_count, invalid_refs, candidate_available = _candidate_gt_coverage(
-            candidate_edges,
-            gt_to_pred=gt_to_pred,
-            gt_edges=edges,
-            valid_pred_ids=valid_pred_ids,
-        )
-        if candidate_available > both:
-            raise OracleAnalysisError("candidate coverage exceeded fixed-detection endpoint coverage")
-        candidate_generation_gap = both - candidate_available
-        # If selected prediction edges recover more GT edges than the supplied
-        # candidate set, those candidates cannot be the actual pre-selection set.
-        if edge_tp > candidate_available:
-            raise OracleAnalysisError(
-                "Official TP count exceeds GT-edge coverage of candidate_edges; "
-                "the supplied candidate set cannot contain the selected solution."
-            )
-        candidate_to_selected_gap = candidate_available - edge_tp
-
-    return BottleneckDecomposition(
-        gt_edges=gt_edge_count,
-        official_edge_tp=edge_tp,
-        official_edge_fp=int(official_row["edge_fp"]),
-        official_edge_fn=int(official_row["edge_fn"]),
+    return FixedDetectionOracleContext(
+        official_row=dict(official_row),
+        gt_edges=edges,
+        gt_to_pred=gt_to_pred,
+        valid_pred_ids=frozenset(valid_pred_ids),
         gt_nodes=int(gt_graph.num_nodes()),
         pred_nodes=int(pred_graph.num_nodes()),
         matched_gt_nodes=len(gt_to_pred),
@@ -212,12 +305,42 @@ def decompose_fixed_detections(
         gt_edges_source_only_available=source_only,
         gt_edges_target_only_available=target_only,
         gt_edges_neither_endpoint_available=neither,
-        detection_unavailable_edges=unavailable,
-        fixed_detection_edge_ceiling_recall=both / gt_edge_count,
-        fixed_detection_recoverable_edges=fixed_detection_gap,
-        candidate_edges_supplied=candidate_count,
-        candidate_invalid_node_refs=invalid_refs,
-        gt_edges_candidate_available=candidate_available,
-        candidate_generation_gap=candidate_generation_gap,
-        candidate_to_selected_gap=candidate_to_selected_gap,
     )
+
+
+def decompose_fixed_detections(
+    pred_graph: td.graph.BaseGraph,
+    gt_graph: td.graph.BaseGraph,
+    *,
+    estimated_total_nodes: float,
+    candidate_edges: Iterable[tuple[int, int]] | None = None,
+    scale: tuple[float, float, float] = DEFAULT_SCALE,
+    max_distance: float = MAX_DISTANCE_UM,
+) -> BottleneckDecomposition:
+    """Decompose recoverable edge opportunity without changing detections.
+
+    The official evaluator is executed first and mutates ``pred_graph`` by
+    writing official node/edge matching attributes. ``candidate_edges`` should
+    represent the pre-solver/pre-threshold edge proposal set using *predicted
+    graph node IDs*.
+
+    This legacy API enforces that the supplied candidate set could contain the
+    baseline selected solution. For arbitrary alternative candidate generators,
+    use :func:`prepare_fixed_detection_oracle` followed by
+    :meth:`FixedDetectionOracleContext.measure_candidate_coverage` instead.
+
+    ``fixed_detection_edge_ceiling_recall`` is simply the fraction of GT edges
+    whose two endpoints are represented by official-matched detections. It is a
+    coverage ceiling on edge recall at these detections; it is **not** an
+    adjusted-Jaccard or final-score oracle because FP, count adjustment,
+    topology, and division terms still matter.
+    """
+
+    context = prepare_fixed_detection_oracle(
+        pred_graph,
+        gt_graph,
+        estimated_total_nodes=estimated_total_nodes,
+        scale=scale,
+        max_distance=max_distance,
+    )
+    return context.decompose_strict(candidate_edges)
