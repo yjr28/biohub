@@ -213,3 +213,35 @@ With only two embryos, using the opposite embryo to choose among learned associa
 ### Next gate
 
 Execute the full training-side chain on real competition data for each direction, freeze the Phase-2F winner, and only then run one clean opposite-embryo LOEO evaluation. Subsequent engineering must be driven by the measured bottleneck/error decomposition rather than by reverse-fitting this holdout.
+
+---
+
+## D-0009 — Treat each opposite embryo as a one-shot frozen evidence boundary
+
+**Date:** 2026-09-04  
+**Status:** active
+
+### Decision
+
+Once Phase 2F freezes a winner, the opposite-embryo LOEO evaluation must not perform any additional model selection. Score exactly that frozen winner and preserve the result as evidence. Do not alter detector settings, candidate generation, HOCT checkpoint, window size, solver weights, or promotion policy from the resulting holdout score and then reuse the same embryo as if it were fresh validation.
+
+### Enforcement
+
+`scripts/run_frozen_loeo.py`:
+
+- requires Phase-2E and Phase-2F artifacts to agree exactly on monitor and holdout dataset scope;
+- requires both upstream artifacts to state that LOEO was unused for selection and cannot expand/replace the frozen winner;
+- permits only `organizer_control` or the exact recorded winning HOCT trial;
+- verifies a HOCT winner's candidate ID still belongs to the frozen Phase-2E frontier;
+- requires the organizer holdout prediction directory to contain exactly the holdout movies and no training-side monitor outputs;
+- fingerprints file- or directory-backed GEFF artifacts with deterministic SHA-256 tree hashes before scoring;
+- constructs all frozen HOCT predictions before invoking the GT evaluator;
+- refuses to overwrite an existing LOEO output directory.
+
+### Reason
+
+With two embryos, the informational value of a clean cross-embryo result is unusually high and unusually easy to destroy. A mechanically enforced boundary prevents architecture or threshold search from quietly migrating into the validation set and gives the two directional LOEO results a defensible interpretation as generalization evidence.
+
+### Next gate
+
+Run the complete baseline → candidate calibration → learned calibration → frozen LOEO chain on real competition data in both directions. Only after those two results exist should the next architecture branch be chosen, using the measured loss decomposition and directional robustness rather than a new broad research sweep.

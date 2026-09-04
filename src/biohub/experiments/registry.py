@@ -50,6 +50,45 @@ def file_sha256(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
+def path_sha256(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
+    """Fingerprint one file or an entire directory tree deterministically.
+
+    GEFF artifacts can be directory stores rather than single files.  For a
+    directory, hash every regular file in lexicographic relative-path order and
+    include each relative path in the digest so renames/layout changes are also
+    detected.  Symlinks are rejected to keep provenance independent of external
+    filesystem targets.  For a regular file this is identical to ``file_sha256``.
+    """
+
+    path = Path(path)
+    if path.is_file():
+        return file_sha256(path, chunk_size=chunk_size)
+    if not path.is_dir():
+        raise ExperimentContractError(f"Cannot fingerprint missing path: {path}")
+
+    entries = sorted(path.rglob("*"), key=lambda item: item.relative_to(path).as_posix())
+    files = []
+    for entry in entries:
+        if entry.is_symlink():
+            raise ExperimentContractError(f"Refusing to fingerprint symlinked artifact: {entry}")
+        if entry.is_file():
+            files.append(entry)
+    if not files:
+        raise ExperimentContractError(f"Cannot fingerprint empty directory artifact: {path}")
+
+    digest = hashlib.sha256()
+    for entry in files:
+        relative = entry.relative_to(path).as_posix().encode("utf-8")
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        size = entry.stat().st_size
+        digest.update(size.to_bytes(8, "big"))
+        with entry.open("rb") as handle:
+            while chunk := handle.read(chunk_size):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _validate_sha256(value: str, field_name: str) -> str:
     value = value.strip().lower()
     if len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value):
