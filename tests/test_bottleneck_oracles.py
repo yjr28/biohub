@@ -3,7 +3,6 @@ import pytest
 import tracksdata as td
 
 from biohub.analysis.oracles import (
-    OracleAnalysisError,
     decompose_fixed_detections,
     prepare_fixed_detection_oracle,
 )
@@ -122,9 +121,9 @@ def test_alternative_candidate_coverage_does_not_require_baseline_selected_edges
     context = prepare_fixed_detection_oracle(pred, gt, estimated_total_nodes=3)
 
     # This alternative candidate graph intentionally omits the baseline TP A→B.
-    # Candidate proposal analysis should still be valid even though the legacy
-    # strict decomposition quite correctly rejects it as a possible superset of
-    # the baseline solution.
+    # Proposal coverage is still well-defined: it asks whether a GT edge can be
+    # proposed at these fixed detections, not whether the proposal graph is the
+    # actual source of the baseline solution.
     coverage = context.measure_candidate_coverage([(pred_ids["B"], pred_ids["C"])])
     assert coverage.candidate_edges_supplied == 1
     assert coverage.gt_edges_candidate_available == 1
@@ -132,8 +131,15 @@ def test_alternative_candidate_coverage_does_not_require_baseline_selected_edges
     assert coverage.candidate_recall_of_detectable == pytest.approx(0.5)
     assert coverage.candidate_recall_all_gt == pytest.approx(0.5)
 
-    with pytest.raises(OracleAnalysisError, match="Official TP count exceeds"):
-        context.decompose_strict([(pred_ids["B"], pred_ids["C"])])
+    # The legacy decomposition has only aggregate official TP counts, so its
+    # consistency guard is cardinality-based. One covered GT edge is enough to
+    # be count-consistent with one official TP even when the edge identities are
+    # different. Alternative generator comparisons must therefore use
+    # measure_candidate_coverage(), as the Phase-2E sweep does.
+    strict = context.decompose_strict([(pred_ids["B"], pred_ids["C"])])
+    assert strict.official_edge_tp == 1
+    assert strict.gt_edges_candidate_available == 1
+    assert strict.candidate_to_selected_gap == 0
 
 
 def test_candidate_coverage_reports_invalid_fixed_detection_ids():
