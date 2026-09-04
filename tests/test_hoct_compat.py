@@ -83,6 +83,24 @@ def test_graph_contains_hoct_feature_contract_with_neutral_missing_features():
     assert graph.metadata["hoct_upstream_point_api_implemented"] is False
 
 
+def test_preserves_canonical_fixed_detection_identity():
+    points = pl.DataFrame(
+        {
+            "detection_id": [900, 101],
+            "t": [1, 0],
+            "z": [2.0, 1.0],
+            "y": [3.0, 2.0],
+            "x": [4.0, 3.0],
+        }
+    )
+    graph = build_hoct_point_graph(points, HOCTPointGraphConfig(distance_threshold_um=5.0))
+    attrs = graph.node_attrs(attr_keys=["source_detection_id", td.DEFAULT_ATTR_KEYS.T]).sort(
+        td.DEFAULT_ATTR_KEYS.T
+    )
+    assert attrs["source_detection_id"].to_list() == [101, 900]
+    assert graph.metadata["preserves_source_detection_id"] is True
+
+
 def test_candidate_radius_uses_anisotropic_physical_microns_not_voxel_distance():
     # t=1 node A is only one z voxel from t=0 source: 1.625 um, so a 1 um
     # radius must reject it. Node B is two x voxels away: 0.8125 um, so it must
