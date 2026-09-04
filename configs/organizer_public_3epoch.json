@@ -1,0 +1,33 @@
+{
+  "baseline_family": "organizer_temporal_unet_node_transformer",
+  "organizer_revision": "075fc5f5a52d11077f9dc2b074644618f26939e2",
+  "purpose": "public-protocol reference settings; clean LOEO uses separate holdout-safe split files",
+  "training": {
+    "epochs": 3,
+    "lr": 0.0001,
+    "batch_size": 16,
+    "num_workers": 8,
+    "unet_out_channels": 32,
+    "unet_layers": [32, 64, 128],
+    "downsample_zyx": [1, 4, 4],
+    "det_loss_weight": 1.0,
+    "det_neg_weight": 0.01,
+    "window_size": 2,
+    "pool_kernel_um": 5.0,
+    "data_parallel": true,
+    "checkpoint_selection": "organizer trainer maximizes test_acc * test_recall each epoch",
+    "augmentation_rng_bitwise_reproducible": false
+  },
+  "prediction": {
+    "det_threshold": 0.99,
+    "unet_batch_size": 4,
+    "det_tta": true,
+    "pool_kernel_um": 3.0,
+    "edge_activation": "softmax",
+    "edge_threshold": 0.5,
+    "max_parents_per_node": 1,
+    "max_children_per_node": 2,
+    "use_ilp": false
+  },
+  "validation_warning": "Never put the true LOEO embryo in the pinned trainer's test list: it selects the saved checkpoint on that list."
+}
