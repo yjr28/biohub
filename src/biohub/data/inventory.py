@@ -12,7 +12,7 @@ import csv
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import tracksdata as td
 import zarr
@@ -66,11 +66,17 @@ def _parse_scale(attrs: dict[str, Any]) -> tuple[float, float, float]:
         return DEFAULT_SCALE
     try:
         transform = multiscales[0]["datasets"][0]["coordinateTransformations"][0]
-        if transform["type"] != "scale":
-            raise DataInventoryError(f"Unsupported coordinate transform: {transform!r}")
-        values = tuple(float(value) for value in transform["scale"][-3:])
-    except (KeyError, IndexError, TypeError, ValueError) as exc:
+    except (KeyError, IndexError, TypeError) as exc:
         raise DataInventoryError(f"Malformed OME-Zarr multiscales metadata: {multiscales!r}") from exc
+
+    if transform.get("type") != "scale":
+        raise DataInventoryError(f"Unsupported coordinate transform: {transform!r}")
+
+    try:
+        values = tuple(float(value) for value in transform["scale"][-3:])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise DataInventoryError(f"Malformed OME-Zarr scale transform: {transform!r}") from exc
+
     if len(values) != 3 or any(value <= 0 for value in values):
         raise DataInventoryError(f"Invalid spatial scale: {values!r}")
     return values
