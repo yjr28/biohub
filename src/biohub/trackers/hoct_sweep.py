@@ -74,6 +74,9 @@ class HOCTCandidateSweepReport:
 
 
 def _canonical_config_payload(config: HOCTPointGraphConfig) -> dict:
+    # Spatial scale comes from each dataset's image metadata rather than from the
+    # sweep hypothesis. Excluding it keeps one conceptual configuration ID
+    # stable across datasets even if their recorded voxel spacing differs.
     return {
         "candidate_distance_space": config.candidate_distance_space,
         "candidate_distance_threshold": config.candidate_distance_threshold,
@@ -81,12 +84,11 @@ def _canonical_config_payload(config: HOCTPointGraphConfig) -> dict:
         "distance_threshold_voxels": config.distance_threshold_voxels,
         "n_neighbors": config.n_neighbors,
         "max_delta_t": config.max_delta_t,
-        "scale_zyx_um": list(config.scale_zyx_um),
     }
 
 
 def candidate_config_id(config: HOCTPointGraphConfig) -> str:
-    """Return a deterministic short ID for one complete candidate config."""
+    """Return a deterministic ID for candidate hyperparameters, not dataset metadata."""
 
     payload = json.dumps(
         _canonical_config_payload(config),
@@ -134,6 +136,33 @@ def pareto_frontier(trials: Sequence[HOCTCandidateTrial]) -> tuple[str, ...]:
         )
     )
     return tuple(trial.config_id for trial in frontier)
+
+
+def _report_from_trials(trials: Sequence[HOCTCandidateTrial]) -> HOCTCandidateSweepReport:
+    trials = tuple(
+        sorted(
+            trials,
+            key=lambda trial: (
+                trial.candidate_distance_space,
+                trial.candidate_distance_threshold,
+                trial.n_neighbors,
+                trial.max_delta_t,
+                trial.config_id,
+            ),
+        )
+    )
+    if not trials:
+        raise HOCTCandidateSweepError("candidate sweep report cannot be empty")
+    by_space: dict[str, tuple[str, ...]] = {}
+    for space in sorted({trial.candidate_distance_space for trial in trials}):
+        by_space[space] = pareto_frontier(
+            [trial for trial in trials if trial.candidate_distance_space == space]
+        )
+    return HOCTCandidateSweepReport(
+        trials=trials,
+        pareto_config_ids=pareto_frontier(trials),
+        pareto_config_ids_by_space=by_space,
+    )
 
 
 def _validate_configs(configs: Iterable[HOCTPointGraphConfig]) -> tuple[HOCTPointGraphConfig, ...]:
@@ -203,25 +232,85 @@ def evaluate_hoct_candidate_configs(
             )
         )
 
-    trials.sort(
-        key=lambda trial: (
-            trial.candidate_distance_space,
-            trial.candidate_distance_threshold,
-            trial.n_neighbors,
-            trial.max_delta_t,
-            trial.config_id,
-        )
+    return _report_from_trials(trials)
+
+
+def _trial_hyperparameter_key(trial: HOCTCandidateTrial) -> tuple:
+    return (
+        trial.candidate_distance_space,
+        trial.candidate_distance_threshold,
+        trial.distance_threshold_um,
+        trial.distance_threshold_voxels,
+        trial.n_neighbors,
+        trial.max_delta_t,
     )
-    by_space: dict[str, tuple[str, ...]] = {}
-    for space in sorted({trial.candidate_distance_space for trial in trials}):
-        by_space[space] = pareto_frontier(
-            [trial for trial in trials if trial.candidate_distance_space == space]
+
+
+def aggregate_candidate_sweep_reports(
+    reports: Mapping[str, HOCTCandidateSweepReport],
+) -> HOCTCandidateSweepReport:
+    """Micro-average identical candidate configs across calibration datasets.
+
+    Candidate/GT counts are summed before recall is computed, matching the
+    competition's general preference for count-level aggregation rather than an
+    unweighted average of tiny and large movies. Every dataset must contain the
+    exact same conceptual config IDs.
+    """
+
+    if not isinstance(reports, Mapping) or not reports:
+        raise HOCTCandidateSweepError("aggregate sweep requires at least one named dataset report")
+    ordered = [(str(name), report) for name, report in sorted(reports.items(), key=lambda item: str(item[0]))]
+    if any(not isinstance(report, HOCTCandidateSweepReport) for _, report in ordered):
+        raise HOCTCandidateSweepError("all aggregate entries must be HOCTCandidateSweepReport")
+
+    expected_ids = {trial.config_id for trial in ordered[0][1].trials}
+    if not expected_ids:
+        raise HOCTCandidateSweepError("dataset sweep report contains no trials")
+    indexed: dict[str, dict[str, HOCTCandidateTrial]] = {}
+    for name, report in ordered:
+        by_id = {trial.config_id: trial for trial in report.trials}
+        if set(by_id) != expected_ids:
+            raise HOCTCandidateSweepError(
+                f"dataset {name!r} has a different candidate-config set; aggregate comparison would be invalid"
+            )
+        indexed[name] = by_id
+
+    aggregate_trials: list[HOCTCandidateTrial] = []
+    for config_id in sorted(expected_ids):
+        members = [indexed[name][config_id] for name, _ in ordered]
+        reference = members[0]
+        if any(_trial_hyperparameter_key(member) != _trial_hyperparameter_key(reference) for member in members[1:]):
+            raise HOCTCandidateSweepError(
+                f"config ID {config_id} maps to inconsistent hyperparameters across datasets"
+            )
+        detections = sum(member.detections for member in members)
+        candidates = sum(member.candidate_edges for member in members)
+        gt_edges = sum(member.gt_edges for member in members)
+        detectable = sum(member.detectable_gt_edges for member in members)
+        available = sum(member.candidate_available_gt_edges for member in members)
+        if detections <= 0 or gt_edges <= 0:
+            raise HOCTCandidateSweepError("aggregate candidate sweep has empty detection/GT counts")
+        aggregate_trials.append(
+            HOCTCandidateTrial(
+                config_id=config_id,
+                candidate_distance_space=reference.candidate_distance_space,
+                candidate_distance_threshold=reference.candidate_distance_threshold,
+                distance_threshold_um=reference.distance_threshold_um,
+                distance_threshold_voxels=reference.distance_threshold_voxels,
+                n_neighbors=reference.n_neighbors,
+                max_delta_t=reference.max_delta_t,
+                detections=detections,
+                candidate_edges=candidates,
+                candidate_edges_per_detection=candidates / detections,
+                gt_edges=gt_edges,
+                detectable_gt_edges=detectable,
+                candidate_available_gt_edges=available,
+                candidate_generation_gap=detectable - available,
+                candidate_recall_of_detectable=(available / detectable if detectable else 0.0),
+                candidate_recall_all_gt=available / gt_edges,
+            )
         )
-    return HOCTCandidateSweepReport(
-        trials=tuple(trials),
-        pareto_config_ids=pareto_frontier(trials),
-        pareto_config_ids_by_space=by_space,
-    )
+    return _report_from_trials(aggregate_trials)
 
 
 def expand_candidate_grid(
