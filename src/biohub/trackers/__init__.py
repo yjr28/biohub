@@ -1,5 +1,6 @@
 """Tracker adapters and compatibility layers."""
 
+from .hoct_analysis import candidate_edges_in_source_detection_space
 from .hoct_compat import (
     HOCT_POINT_API_IMPLEMENTED,
     HOCT_REVISION,
@@ -22,6 +23,7 @@ __all__ = [
     "HOCTModelSpec",
     "HOCTPointGraphConfig",
     "build_hoct_point_graph",
+    "candidate_edges_in_source_detection_space",
     "checkpoint_sha256",
     "verify_hoct_checkpoint",
 ]
