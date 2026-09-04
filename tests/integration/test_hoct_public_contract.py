@@ -12,6 +12,7 @@ import numpy as np
 import polars as pl
 import pytest
 import torch
+import tracksdata as td
 
 hoct = pytest.importorskip("hoct")
 
@@ -122,6 +123,7 @@ def test_public_create_graph_scale_does_not_change_candidate_distance_space():
     )
     assert graph.num_nodes() == 2
     assert graph.num_edges() == 1
-    edge_dist = graph.edge_attrs(attr_keys=["edge_dist"])["edge_dist"].to_list()
+    distance_key = td.DEFAULT_ATTR_KEYS.EDGE_DIST
+    edge_dist = graph.edge_attrs(attr_keys=[distance_key])[distance_key].to_list()
     assert edge_dist == pytest.approx([1.0])
     assert tuple(graph.metadata["scale"]) == pytest.approx((1.0, 10.0, 1.0, 1.0))
