@@ -45,6 +45,23 @@ def test_manifest_normalizes_and_validates_clean_loeo():
     assert manifest.seeds == (7, 11)
     assert manifest.train_datasets == ("E1_crop1", "E1_crop2")
     assert manifest.validation_embryos == ("E2",)
+    assert manifest.stochastic_control == "controlled"
+
+
+def test_controlled_manifest_requires_a_seed():
+    with pytest.raises(ExperimentContractError, match="must record at least one seed"):
+        _manifest(seeds=())
+
+
+def test_uncontrolled_manifest_can_truthfully_record_no_seed():
+    manifest = _manifest(seeds=(), stochastic_control="uncontrolled")
+    assert manifest.seeds == ()
+    assert manifest.stochastic_control == "uncontrolled"
+
+
+def test_invalid_stochastic_control_rejected():
+    with pytest.raises(ExperimentContractError, match="stochastic_control"):
+        _manifest(stochastic_control="maybe")
 
 
 def test_manifest_rejects_embryo_leakage():
