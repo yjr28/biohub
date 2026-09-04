@@ -10,6 +10,7 @@ from pathlib import Path
 
 from biohub.analysis import decompose_fixed_detections
 from biohub.evaluation.official import load_geff, read_estimated_node_count
+from biohub.trackers import candidate_edges_in_source_detection_space
 
 
 def _args() -> argparse.Namespace:
@@ -20,11 +21,21 @@ def _args() -> argparse.Namespace:
     parser.add_argument("--dataset", required=True, help="Dataset stem present in inventory train records")
     parser.add_argument("--pred-geff", required=True, type=Path)
     parser.add_argument("--gt-geff", required=True, type=Path)
-    parser.add_argument(
+    candidates = parser.add_mutually_exclusive_group()
+    candidates.add_argument(
         "--candidate-csv",
         type=Path,
         default=None,
-        help="Optional CSV with predicted-graph source_id,target_id columns before solver/selection",
+        help="CSV with baseline predicted-graph source_id,target_id columns before solver/selection",
+    )
+    candidates.add_argument(
+        "--candidate-geff",
+        type=Path,
+        default=None,
+        help=(
+            "Candidate GEFF whose nodes carry source_detection_id. This is the direct path for "
+            "Biohub's centroid-only HOCT adapter."
+        ),
     )
     parser.add_argument("--out", required=True, type=Path)
     return parser.parse_args()
@@ -49,7 +60,7 @@ def _scale_from_inventory(path: Path, dataset: str) -> tuple[float, float, float
     return scale
 
 
-def _candidate_edges(path: Path | None) -> list[tuple[int, int]] | None:
+def _candidate_edges_csv(path: Path | None) -> list[tuple[int, int]] | None:
     if path is None:
         return None
     if not path.is_file():
@@ -71,6 +82,14 @@ def _candidate_edges(path: Path | None) -> list[tuple[int, int]] | None:
     return edges
 
 
+def _candidate_edges_geff(path: Path | None) -> tuple[tuple[int, int], ...] | None:
+    if path is None:
+        return None
+    if not path.exists():
+        raise SystemExit(f"candidate GEFF not found: {path}")
+    return candidate_edges_in_source_detection_space(load_geff(path))
+
+
 def main() -> None:
     args = _args()
     for label, path in (("prediction", args.pred_geff), ("ground truth", args.gt_geff)):
@@ -80,11 +99,16 @@ def main() -> None:
     scale = _scale_from_inventory(args.inventory, args.dataset)
     pred_graph = load_geff(args.pred_geff)
     gt_graph = load_geff(args.gt_geff)
+    candidate_edges = (
+        _candidate_edges_geff(args.candidate_geff)
+        if args.candidate_geff is not None
+        else _candidate_edges_csv(args.candidate_csv)
+    )
     result = decompose_fixed_detections(
         pred_graph,
         gt_graph,
         estimated_total_nodes=read_estimated_node_count(args.gt_geff),
-        candidate_edges=_candidate_edges(args.candidate_csv),
+        candidate_edges=candidate_edges,
         scale=scale,
     )
 
