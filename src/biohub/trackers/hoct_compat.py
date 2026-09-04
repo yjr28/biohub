@@ -1,13 +1,13 @@
 """Centroid-only compatibility graph for evaluating HOCT on Biohub detections.
 
-This module is intentionally *not* a copy of HOCT's public point API.  At the
+This module is intentionally *not* a copy of HOCT's public point API. At the
 pinned HOCT revision below, ``hoct.create_graph_from_points`` is declared but
-its body is still a TODO/``pass``.  We therefore build the minimal tracksdata
+its body is still a TODO/``pass``. We therefore build the minimal tracksdata
 graph ourselves, preserving the feature contract expected by HOCT's
 ``FrameDataset`` and pretrained standardization.
 
 The non-coordinate morphology/intensity features below are filled with the
-training means published in HOCT's own inference API.  After HOCT's fixed
+training means published in HOCT's own inference API. After HOCT's fixed
 standardization those dimensions become zero, making this a clean
 "centroids-only" ablation rather than inventing pseudo-segmentation features.
 If this smoke test is useful, later experiments can replace these neutral values
@@ -28,7 +28,7 @@ from scipy.spatial import cKDTree
 HOCT_REVISION = "2ccc5040823bc944ab67790abd1f56eea7cd4f05"
 HOCT_POINT_API_IMPLEMENTED = False
 
-# Audited from hoct._api._MEAN at HOCT_REVISION.  Feature order in FrameDataset
+# Audited from hoct._api._MEAN at HOCT_REVISION. Feature order in FrameDataset
 # is [t, z, y, x, *REGIONPROPS], with inertia_tensor unpacked to 9 scalars.
 _NEUTRAL_EQUIVALENT_DIAMETER = 11.521
 _NEUTRAL_INTENSITY_MIN = 0.276
@@ -56,7 +56,7 @@ class HOCTCompatibilityError(ValueError):
 class HOCTPointGraphConfig:
     """Candidate-generation settings for the centroid-only HOCT ablation.
 
-    Distances are always computed in physical microns.  ``max_delta_t`` defaults
+    Distances are always computed in physical microns. ``max_delta_t`` defaults
     to one because the Biohub competition metric directly scores only edges
     between consecutive frames.
     """
@@ -92,21 +92,27 @@ def _validated_points(points: pl.DataFrame) -> pl.DataFrame:
     if points.height == 0:
         raise HOCTCompatibilityError("points cannot be empty")
 
-    # Cast explicitly so graph construction cannot depend on upstream dataframe
-    # integer/float widths.  Preserve input order within a frame for stable node IDs.
-    data = points.with_row_index("_input_order").select(
+    expressions = [
         pl.col("_input_order").cast(pl.Int64),
         pl.col("t").cast(pl.Float64),
         pl.col("z").cast(pl.Float64),
         pl.col("y").cast(pl.Float64),
         pl.col("x").cast(pl.Float64),
-    )
+    ]
+    if "detection_id" in points.columns:
+        expressions.append(pl.col("detection_id").cast(pl.Int64))
+
+    # Cast explicitly so graph construction cannot depend on upstream dataframe
+    # integer/float widths. Preserve input order within a frame for stable node IDs.
+    data = points.with_row_index("_input_order").select(*expressions)
     values = data.select("t", "z", "y", "x").to_numpy()
     if not np.isfinite(values).all():
         raise HOCTCompatibilityError("t/z/y/x must all be finite")
     times = values[:, 0]
     if np.any(times < 0) or not np.allclose(times, np.rint(times)):
         raise HOCTCompatibilityError("t must contain nonnegative integer-valued frame indices")
+    if "detection_id" in data.columns and data["detection_id"].n_unique() != data.height:
+        raise HOCTCompatibilityError("detection_id values must be unique when supplied")
     return data.with_columns(pl.col("t").cast(pl.Int64)).sort("t", "_input_order")
 
 
@@ -132,34 +138,48 @@ def _node_rows(points: pl.DataFrame, shape_tzyx: tuple[int, int, int, int] | Non
             )
         border = _hoct_border_dist(coords, shape[1:]).astype(np.float32)
 
+    preserve_detection_id = "detection_id" in points.columns
     rows: list[dict] = []
     for i, row in enumerate(points.iter_rows(named=True)):
-        rows.append(
-            {
-                "t": int(row["t"]),
-                "z": float(row["z"]),
-                "y": float(row["y"]),
-                "x": float(row["x"]),
-                "equivalent_diameter_area": _NEUTRAL_EQUIVALENT_DIAMETER,
-                "intensity_min": _NEUTRAL_INTENSITY_MIN,
-                "intensity_max": _NEUTRAL_INTENSITY_MAX,
-                "intensity_mean": _NEUTRAL_INTENSITY_MEAN,
-                "intensity_std": _NEUTRAL_INTENSITY_STD,
-                "inertia_tensor": _NEUTRAL_INERTIA.copy(),
-                "border_dist": float(border[i]),
-            }
-        )
+        node = {
+            "t": int(row["t"]),
+            "z": float(row["z"]),
+            "y": float(row["y"]),
+            "x": float(row["x"]),
+            "equivalent_diameter_area": _NEUTRAL_EQUIVALENT_DIAMETER,
+            "intensity_min": _NEUTRAL_INTENSITY_MIN,
+            "intensity_max": _NEUTRAL_INTENSITY_MAX,
+            "intensity_mean": _NEUTRAL_INTENSITY_MEAN,
+            "intensity_std": _NEUTRAL_INTENSITY_STD,
+            "inertia_tensor": _NEUTRAL_INERTIA.copy(),
+            "border_dist": float(border[i]),
+        }
+        if preserve_detection_id:
+            node["source_detection_id"] = int(row["detection_id"])
+        rows.append(node)
     return rows
 
 
-def _add_node_schema(graph: td.graph.InMemoryGraph) -> None:
-    for key in ("z", "y", "x", "equivalent_diameter_area", "intensity_min", "intensity_max", "intensity_mean", "intensity_std", "border_dist"):
+def _add_node_schema(graph: td.graph.InMemoryGraph, *, preserve_detection_id: bool) -> None:
+    for key in (
+        "z",
+        "y",
+        "x",
+        "equivalent_diameter_area",
+        "intensity_min",
+        "intensity_max",
+        "intensity_mean",
+        "intensity_std",
+        "border_dist",
+    ):
         graph.add_node_attr_key(key, pl.Float32, 0.0)
     graph.add_node_attr_key(
         "inertia_tensor",
         pl.Array(pl.Float32, (3, 3)),
         np.zeros((3, 3), dtype=np.float32),
     )
+    if preserve_detection_id:
+        graph.add_node_attr_key("source_detection_id", pl.Int64, -1)
 
 
 def _candidate_edges(
@@ -228,11 +248,14 @@ def build_hoct_point_graph(
     """Build a HOCT-compatible candidate graph from fixed Biohub centroids.
 
     Candidate search uses anisotropic **physical** distance, not raw voxel
-    distance.  All missing segmentation/intensity features are set to HOCT's
-    pretrained training means so HOCT standardization maps them to zero.
+    distance. All missing segmentation/intensity features are set to HOCT's
+    pretrained training means so HOCT standardization maps them to zero. If the
+    canonical ``detection_id`` column is supplied, it is preserved on each graph
+    node as ``source_detection_id`` so tracker outputs can be reconciled against
+    the exact same fixed detections.
 
     This function does not run HOCT, solve an ILP, or claim an official HOCT
-    point-cloud inference path.  It supplies a deterministic graph for the
+    point-cloud inference path. It supplies a deterministic graph for the
     fixed-detection association experiment while the upstream point API remains
     unimplemented at :data:`HOCT_REVISION`.
     """
@@ -240,9 +263,10 @@ def build_hoct_point_graph(
     if not isinstance(config, HOCTPointGraphConfig):
         raise HOCTCompatibilityError("config must be an HOCTPointGraphConfig")
     clean = _validated_points(points)
+    preserve_detection_id = "detection_id" in clean.columns
 
     graph = td.graph.InMemoryGraph()
-    _add_node_schema(graph)
+    _add_node_schema(graph, preserve_detection_id=preserve_detection_id)
     node_ids = graph.bulk_add_nodes(_node_rows(clean, shape_tzyx))
 
     graph.add_edge_attr_key("edge_dist", pl.Float64, 0.0)
@@ -261,5 +285,6 @@ def build_hoct_point_graph(
         scale=(1.0, *config.scale_zyx_um),
         shape=shape_tzyx,
         neutral_missing_regionprops=True,
+        preserves_source_detection_id=preserve_detection_id,
     )
     return graph
