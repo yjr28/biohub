@@ -83,3 +83,27 @@ A learned public checkpoint/notebook artifact with unknown training/sample overl
 ### Reason
 
 Validation contamination would invalidate comparisons and could systematically favor public artifacts that have seen held-out samples.
+
+---
+
+## D-0005 — HOCT candidate geometry is an experimental factor
+
+**Date:** 2026-09-04  
+**Status:** active
+
+### Decision
+
+Do not collapse HOCT candidate generation to a single distance convention. Evaluate at least two explicitly named spaces on the same frozen detections:
+
+- `hoct_native_voxel`: raw z/y/x geometry matching public HOCT's pinned candidate implementation;
+- `physical_um`: anisotropically scaled OME-Zarr physical geometry.
+
+Candidate coverage must be measured before learned HOCT scoring so a gain/loss can be attributed to proposal geometry rather than to the transformer or ILP.
+
+### Evidence
+
+At HOCT revision `2ccc5040823bc944ab67790abd1f56eea7cd4f05`, `create_graph(...)` accepts `scale` and creates temporary scaled-coordinate columns, but it invokes `tracksdata.edges.DistanceEdges(...)` without selecting those scaled columns. The pinned tracksdata operator defaults to raw `z/y/x`. A dedicated public-package integration test characterizes this behavior with an anisotropic synthetic example.
+
+### Consequence
+
+The first real-data HOCT sweep starts with candidate-recall calibration in both spaces. It does not spend checkpoint inference time on radius/neighbor settings whose fixed-detection GT-edge coverage is already inadequate.
