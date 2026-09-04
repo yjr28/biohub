@@ -130,7 +130,8 @@ def _run(command: tuple[str, ...], *, label: str) -> float:
 
 def main() -> None:
     args = _args()
-    inventory = _load_inventory(args.inventory.resolve())
+    inventory_path = args.inventory.resolve()
+    inventory = _load_inventory(inventory_path)
     competition_root = args.competition_root.resolve()
     train_dir = competition_root / "train"
     if not train_dir.is_dir():
@@ -189,8 +190,10 @@ def main() -> None:
             "max_parents_per_node": 1,
             "max_children_per_node": 2,
         },
+        "stochastic_control": "uncontrolled",
         "known_reproducibility_caveat": (
-            "pinned FrameWindowDataset augmentation uses numpy.default_rng() without an explicit seed"
+            "pinned trainer CLI does not pass train(seed=...), and FrameWindowDataset augmentation "
+            "uses numpy.default_rng() without an explicit seed"
         ),
         "train_command": list(commands.train),
         "predict_command": list(commands.predict),
@@ -233,18 +236,19 @@ def main() -> None:
             "error budget without held-out-embryo checkpoint selection."
         ),
         git_commit=git_commit,
-        inventory_sha256=file_sha256(args.inventory),
+        inventory_sha256=file_sha256(inventory_path),
         fold_name=args.fold,
         train_embryos=protocol.train_embryos,
         validation_embryos=(protocol.holdout_embryo,),
         train_datasets=protocol.train_datasets,
         validation_datasets=protocol.holdout_datasets,
         config=effective_config,
-        seeds=(0,),
+        seeds=(),
+        stochastic_control="uncontrolled",
         leakage_controls=leakage_controls,
         notes=(
-            "Recorded seed is provenance only: pinned organizer CLI/augmentation path is not guaranteed "
-            "bitwise deterministic; see docs/organizer_baseline_audit.md."
+            "Pinned organizer baseline has uncontrolled training stochasticity; repeat it before "
+            "interpreting small score differences. See docs/organizer_baseline_audit.md."
         ),
     )
     registry = REPO_ROOT / "experiments" / "manifests.jsonl"
