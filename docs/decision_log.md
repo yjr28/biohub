@@ -149,3 +149,34 @@ opposite embryo          → clean LOEO evaluation only
 ```
 
 After both directional hypotheses are frozen independently, compare their cross-embryo results. Do not reverse-fit the calibration grid from those holdout scores.
+
+---
+
+## D-0007 — Freeze the aggregate candidate frontier before learned tracker evaluation
+
+**Date:** 2026-09-04  
+**Status:** active
+
+### Decision
+
+The candidate-generation stage may inspect only training-side nested monitor datasets. Its output is the **aggregate Pareto frontier** of candidate proposal coverage versus candidate-graph size. That complete frontier is frozen as the only configuration set allowed to enter learned-HOCT/solver calibration.
+
+The opposite-embryo LOEO set may evaluate the final frozen learned tracker, but it may not add candidate configurations, expand radii, alter neighbour counts, or resurrect dominated configurations.
+
+### Enforcement
+
+`scripts/run_hoct_candidate_calibration.py` derives prediction settings from the selected organizer baseline, redirects prediction into a calibration-specific `USER` namespace, requires exactly the intended monitor GEFF set, freezes those exact detector nodes, runs the oracle-first candidate sweep, and writes `candidate_shortlist.json` with:
+
+- the allowed Pareto-front configuration IDs;
+- a deterministic priority ordering for the next training-side stage;
+- the maximum-coverage/minimum-cost frontier member;
+- hashes for checkpoint, protocol, effective config, split file, inventory, grid, detection index, and sweep report;
+- `loeo_may_expand_shortlist=false`.
+
+### Reason
+
+Candidate recall and learned association quality are different causal layers. Running transformer/ILP inference on obviously dominated or coverage-deficient proposal graphs wastes compute and makes failures harder to attribute. Freezing the candidate frontier before learned scoring also prevents the LOEO embryo from becoming an implicit hyperparameter search oracle.
+
+### Next gate
+
+Run learned-HOCT/solver calibration only on the frozen candidate shortlist and only on the same training-side monitor datasets. Select and freeze one learned configuration per LOEO direction before evaluating the opposite embryo.
