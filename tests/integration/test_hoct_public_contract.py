@@ -1,9 +1,9 @@
 """Integration contract against the pinned public HOCT package.
 
-The ordinary evaluator-contract job skips this file when HOCT is not installed.
-The dedicated ``hoct-integration`` workflow installs the exact audited public
-revision and executes these tests. No competition data or model weights are
-required.
+The ordinary evaluator-contract job skips this file when the optional HOCT
+runtime is not installed. The dedicated ``hoct-integration`` workflow installs
+the exact audited public revision and executes these tests. No competition data
+or model weights are required.
 """
 
 from __future__ import annotations
@@ -11,9 +11,9 @@ from __future__ import annotations
 import numpy as np
 import polars as pl
 import pytest
-import torch
 import tracksdata as td
 
+torch = pytest.importorskip("torch")
 hoct = pytest.importorskip("hoct")
 
 from biohub.trackers import HOCT_REVISION, HOCTPointGraphConfig, build_hoct_point_graph
