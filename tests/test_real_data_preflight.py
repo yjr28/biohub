@@ -38,12 +38,16 @@ def _test_record(dataset: str):
 def _report(*, train=None, overlap=()):
     train = tuple(train or (_record("E1_a", "E1"), _record("E1_b", "E1"), _record("E2_a", "E2")))
     names = tuple(record.dataset for record in train)
-    folds = tuple(asdict(fold) for fold in build_loeo_folds(names))
+    embryos = tuple(sorted({record.embryo_id for record in train}))
+    # For deliberately-invalid inventory fixtures (e.g. three embryos), do not
+    # ask the stricter LOEO constructor to fail before the real-data gate itself
+    # is exercised.  The gate checks embryo cardinality before inspecting folds.
+    folds = tuple(asdict(fold) for fold in build_loeo_folds(names)) if len(embryos) == 2 else ()
     return InventoryReport(
         competition_root="/kaggle/input/competitions/biohub-cell-tracking-during-development",
         train=train,
         visible_test=(_test_record("TEST_0"),),
-        train_embryos=tuple(sorted({record.embryo_id for record in train})),
+        train_embryos=embryos,
         visible_test_embryos=("TEST",),
         train_visible_test_name_overlap=tuple(overlap),
         loeo_folds=folds,
