@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+.env
+.DS_Store
+
+# Competition data / externally obtained artifacts
+# Never commit restricted competition data to this public repository.
+data/
+*.zarr
+*.zarr/
+*.geff
+*.geff/
+
+# Model/checkpoint artifacts
+checkpoints/
+models/
+*.ckpt
+*.pt
+*.pth
+*.onnx
+
+# Generated predictions / submissions / large experiment outputs
+artifacts/
+outputs/
+predictions/
+submission.csv
+submission_*.csv
+*.parquet
+
+# Local Kaggle credentials / API tokens
+kaggle.json
+.kaggle/
+
+# IDE
+.vscode/
+.idea/

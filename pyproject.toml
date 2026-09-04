@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "biohub-cell-tracking"
+version = "0.0.0"
+description = "Evidence-first competition workspace for Biohub - Cell Tracking During Development"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.4.2"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/biohub"]
