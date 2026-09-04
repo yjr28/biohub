@@ -1,7 +1,11 @@
 import polars as pl
+import pytest
 import tracksdata as td
 
-from biohub.analysis.oracles import decompose_fixed_detections
+from biohub.analysis.oracles import (
+    decompose_fixed_detections,
+    prepare_fixed_detection_oracle,
+)
 
 
 def _graph(nodes, edges):
@@ -101,3 +105,60 @@ def test_candidate_generation_gap_is_visible_before_solver_selection():
     assert result.gt_edges_candidate_available == 1
     assert result.candidate_generation_gap == 1
     assert result.candidate_to_selected_gap == 0
+
+
+def test_alternative_candidate_coverage_does_not_require_baseline_selected_edges():
+    gt, _ = _gt()
+    pred, pred_ids = _graph(
+        {
+            "A": {"t": 0, "z": 0.0, "y": 0.0, "x": 0.0},
+            "B": {"t": 1, "z": 0.0, "y": 1.0, "x": 0.0},
+            "C": {"t": 2, "z": 0.0, "y": 2.0, "x": 0.0},
+        },
+        [("A", "B")],
+    )
+
+    context = prepare_fixed_detection_oracle(pred, gt, estimated_total_nodes=3)
+
+    # This alternative candidate graph intentionally omits the baseline TP A→B.
+    # Proposal coverage is still well-defined: it asks whether a GT edge can be
+    # proposed at these fixed detections, not whether the proposal graph is the
+    # actual source of the baseline solution.
+    coverage = context.measure_candidate_coverage([(pred_ids["B"], pred_ids["C"])])
+    assert coverage.candidate_edges_supplied == 1
+    assert coverage.gt_edges_candidate_available == 1
+    assert coverage.candidate_generation_gap == 1
+    assert coverage.candidate_recall_of_detectable == pytest.approx(0.5)
+    assert coverage.candidate_recall_all_gt == pytest.approx(0.5)
+
+    # The legacy decomposition has only aggregate official TP counts, so its
+    # consistency guard is cardinality-based. One covered GT edge is enough to
+    # be count-consistent with one official TP even when the edge identities are
+    # different. Alternative generator comparisons must therefore use
+    # measure_candidate_coverage(), as the Phase-2E sweep does.
+    strict = context.decompose_strict([(pred_ids["B"], pred_ids["C"])])
+    assert strict.official_edge_tp == 1
+    assert strict.gt_edges_candidate_available == 1
+    assert strict.candidate_to_selected_gap == 0
+
+
+def test_candidate_coverage_reports_invalid_fixed_detection_ids():
+    gt, _ = _gt()
+    pred, pred_ids = _graph(
+        {
+            "A": {"t": 0, "z": 0.0, "y": 0.0, "x": 0.0},
+            "B": {"t": 1, "z": 0.0, "y": 1.0, "x": 0.0},
+            "C": {"t": 2, "z": 0.0, "y": 2.0, "x": 0.0},
+        },
+        [("A", "B")],
+    )
+    context = prepare_fixed_detection_oracle(pred, gt, estimated_total_nodes=3)
+    coverage = context.measure_candidate_coverage(
+        [
+            (pred_ids["A"], pred_ids["B"]),
+            (999_999, pred_ids["C"]),
+        ]
+    )
+    assert coverage.candidate_edges_supplied == 2
+    assert coverage.candidate_invalid_node_refs == 1
+    assert coverage.gt_edges_candidate_available == 1
