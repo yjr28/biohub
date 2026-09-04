@@ -29,56 +29,83 @@ When sources disagree, use this order unless a newer official statement explicit
 
 Community claims never become repository assumptions merely because they are popular or leaderboard-adjacent.
 
-## 3. Official evaluator revision — VERIFIED / PINNED FOR INSPECTION
+## 3. Official evaluator revision — VERIFIED / PINNED
 
-Repository: `royerlab/kaggle-cell-tracking-competition`  
-Pinned revision for Phase 0B inspection:
+Repository: `royerlab/kaggle-cell-tracking-competition`
+
+Pinned revision:
 
 ```text
 075fc5f5a52d11077f9dc2b074644618f26939e2
 ```
 
-The commit message is `Merge pull request #2 from royerlab/metrics-fix — Updating metric to patch weakly connected component exploit` (2026-07-18).
+As audited on 2026-09-04, this remained the tip of organizer `main`. The commit is the merge that patches the weakly-connected-component metric exploit.
 
-**Important:** Phase 0A does not vendor or wrap this evaluator yet. Phase 0B must inspect the exact code/tests at this revision and verify whether Kaggle has since published a newer official metric revision before implementation begins.
+The exact source is vendored as a git submodule at `vendor/kaggle-cell-tracking-competition`. We call its scoring functions directly; we do not maintain an independent metric implementation.
 
-Pinned documentation:
-- `metrics.md`: https://github.com/royerlab/kaggle-cell-tracking-competition/blob/075fc5f5a52d11077f9dc2b074644618f26939e2/metrics.md
-- `README.md`: https://github.com/royerlab/kaggle-cell-tracking-competition/blob/075fc5f5a52d11077f9dc2b074644618f26939e2/README.md
+See:
+- `docs/evaluator_audit.md`
+- `docs/metric_characterization.md`
+- https://github.com/royerlab/kaggle-cell-tracking-competition/blob/075fc5f5a52d11077f9dc2b074644618f26939e2/metrics.md
 
 ## 4. Data / graph representation — VERIFIED
 
 From the official repository at the pinned revision:
 
 - Images are OME-Zarr with dimensions `(T, Z, Y, X)`.
-- Spatial voxel scale `(Z, Y, X)` is `(1.625, 0.40625, 0.40625)` micrometers per pixel.
+- Spatial voxel scale `(Z, Y, X)` is `(1.625, 0.40625, 0.40625)` micrometers per pixel when not overridden by dataset OME metadata.
 - Tracks use `tracksdata` GEFF graphs.
 - Nodes represent approximate cell centers `(t, z, y, x)`.
 - Temporal edges link cells through time.
 - A division is represented by a source node linked to two daughter nodes.
 - Ground-truth annotations are sparse: only a subset of cells is annotated.
 
-Do not hard-code these values outside a single configuration/adapter boundary until Phase 0B confirms how the evaluator obtains scale in practice.
+Metric-adjacent code must use physical scale, not assume isotropic voxels.
 
-## 5. Edge metric — VERIFIED
+## 5. Dataset identity and hidden-domain split — VERIFIED BY COMPETITION HOST
 
-From the pinned official `metrics.md`:
+Two host clarifications are now implementation-level facts:
+
+1. Dataset IDs use `<embryo_id>_<crop_id>`. The **embryo ID is only the prefix before the first underscore**; the remainder is the crop ID.
+   - Host source: https://www.kaggle.com/competitions/biohub-cell-tracking-during-development/discussion/723694
+2. The training set contains **exactly two unique embryo IDs**. The host states that the hidden test set has **no embryo-ID overlap with training** and is roughly similar in size.
+   - Host source: https://www.kaggle.com/competitions/biohub-cell-tracking-during-development/discussion/716793
+
+### Validation consequence — VERIFIED DESIGN CONTRACT
+
+Primary model-selection validation must preserve embryo identity. The repository therefore builds **leave-one-embryo-out (LOEO)** folds from the two host-defined train embryos rather than random frame/edge splits.
+
+Because there are only two embryos, LOEO is inherently high-variance; stress slices and secondary diagnostics may supplement it, but they may not mix the held-out embryo back into training/calibration and then be described as clean cross-embryo validation.
+
+## 6. Visible test folder vs hidden scoring set — VERIFIED BY COMPETITION HOST
+
+The four publicly visible `test/` clips are **dummy placeholder files** used to verify that a submission notebook produces a CSV. The host states that the real scoring set is a substantially larger private hidden set and has no overlap with the public training set.
+
+Host source:
+https://www.kaggle.com/competitions/biohub-cell-tracking-during-development/discussion/716062
+
+Consequences:
+
+- never use the visible test clips as evidence of unseen-embryo generalization;
+- an overlap between visible-test and train dataset names is expected placeholder behavior, not hidden-test leakage;
+- final runtime engineering must target the hidden-set scale rather than the four visible placeholder clips.
+
+## 7. Edge metric — VERIFIED
 
 ### Node matching
 
-- Predicted nodes and GT nodes are matched by centroid distance.
-- Maximum matching distance: **7 micrometers**.
-- Matching uses an optimal bipartite assignment.
-- A predicted node can match at most one GT node.
+- predicted and GT nodes are matched by centroid distance;
+- matching is timepoint-aware and one-to-one optimal bipartite assignment;
+- maximum physical matching distance is **7 micrometers**, inclusive.
 
-### Edge TP/FN/FP semantics
+### Edge semantics
 
-- A predicted edge is TP when both endpoints match GT nodes connected by a GT edge.
-- A GT edge without such a predicted match is FN.
-- Because GT is sparse, not every unmatched predicted edge/node is automatically an FP.
-- The official metric defines specific FP cases when one matched endpoint contradicts the annotated GT connection; other predicted edges may be ignored.
+- predicted edge TP requires both endpoints to match GT nodes connected by a GT edge;
+- a GT edge without such a predicted match is FN;
+- sparse GT means many unmatched prediction edges are ignored rather than automatically counted as FP;
+- the patched evaluator has explicit duplicate, merge, temporal-direction, and out-degree guards.
 
-This sparse-label behavior is strategically important and must be preserved exactly by our evaluator adapter; we will not replace it with an ordinary dense precision/recall implementation.
+The executable details are pinned in `tests/test_metric_characterization.py`.
 
 ### Edge Jaccard
 
@@ -91,53 +118,62 @@ edge_jaccard = TP / (TP + FP + FN)
 ```text
 adjusted_jaccard = max(
     0,
-    jaccard * (1 - a * (T_pred - T_true) / T_true)
+    jaccard * (1 - 0.1 * (T_pred - T_true) / T_true)
 )
 ```
 
-where the official documentation states `a = 0.1`, `T_pred` is total predicted nodes, and `T_true` is a provided coarse estimate of total true nodes including unannotated cells.
+`T_true` is the GT GEFF metadata field `estimated_number_of_nodes`. Phase 0C verified that the official implementation has no upper clamp: underprediction can produce an adjusted edge value larger than raw edge Jaccard. This is a characterization fact, not a recommendation to deliberately underpredict.
 
-## 6. Division metric — VERIFIED AT DOCUMENTATION LEVEL
+## 8. Division metric — VERIFIED AGAINST PINNED CODE/TESTS
 
-From the pinned official `metrics.md`:
+- any raw prediction node with out-degree >= 2 is treated as a predicted fork candidate;
+- division matching uses a local lineage window around the split;
+- a prediction one frame early or late can be accepted when the required directed topology is present;
+- two distinct daughter branches are required;
+- GT divisions and predicted forks are paired one-to-one by maximum-cardinality bipartite matching;
+- cross-component/merged-branch evidence can create division FPs;
+- division Jaccard is `TP / (TP + FP + FN)`.
 
-- A GT division has exactly two outgoing edges.
-- During evaluation, a predicted node with at least two outgoing edges is treated as a predicted fork.
-- Division matching uses a local lineage window around the split and allows a predicted fork one timepoint before or after the annotated split when the required local topology/evidence conditions are met.
-- GT divisions and predicted forks are paired by maximum-cardinality bipartite matching.
-- Division Jaccard is `TP / (TP + FP + FN)`.
+The edge scorer's out-degree cap and the division evaluator's raw-graph fork behavior are not interchangeable; downstream graph construction must respect both.
 
-The patched division rules include directed local topology, distinct daughter branches, component evidence, and anti-merge constraints. We will treat the implementation/tests, not this prose summary, as authoritative in Phase 0B/0C.
+## 9. Aggregation / final score — VERIFIED
 
-## 7. Aggregation / final score — VERIFIED
+Competition-style local scoring uses the organizer path:
 
-The official documentation states:
+```text
+evaluate -> node_recall -> per_sample_metrics -> summarise
+```
 
-- Division counts are micro-averaged across videos before Division Jaccard is computed.
-- Adjusted edge Jaccard is weight-averaged by per-sample size `TP + FP + FN`.
-- Final score:
+- adjusted edge Jaccard is sample-size weighted by `edge_tp + edge_fp + edge_fn`;
+- division TP/FP/FN are micro-averaged across videos;
+- final score:
 
 ```text
 score = adjusted_edge_jaccard + 0.1 * division_jaccard
 ```
 
-## 8. Submission/runtime constraints — VERIFIED FROM CURRENT KAGGLE OVERVIEW
+- when an evaluated split contains no divisions at all, the official summary drops the division term.
+
+Do not use the organizer convenience `evaluate_datasets()` as a private-LB proxy because it does not implement the per-sample node-count adjustment path used by `scripts/evaluate.py`.
+
+## 10. Submission/runtime constraints — VERIFIED FROM CURRENT KAGGLE OVERVIEW
 
 Current Kaggle overview states:
 
-- Submissions must be made through Kaggle Notebooks.
-- CPU runtime: **<= 12 hours**.
-- GPU runtime: **<= 12 hours**.
-- Internet access must be disabled for submission execution.
-- Freely/publicly available external data is allowed, including pretrained models.
-- Submission file must be named `submission.csv`.
-- Every test dataset must appear in the submission.
+- submissions are made through Kaggle Notebooks;
+- CPU runtime: **<= 12 hours**;
+- GPU runtime: **<= 12 hours**;
+- Internet access must be disabled for submission execution;
+- freely/publicly available external data is allowed, including pretrained models;
+- submission file must be named `submission.csv`;
+- every hidden test dataset must appear in the submission.
 
-Primary source: https://www.kaggle.com/competitions/biohub-cell-tracking-during-development/overview
+Primary source:
+https://www.kaggle.com/competitions/biohub-cell-tracking-during-development/overview
 
-Additional rule details (licensing, code sharing, team/submission limits, winner obligations, private external services) must be re-read from the current Rules page before they are encoded into tooling or workflow policy.
+Additional rule details (licensing, code sharing, team/submission limits, winner obligations, private external services) remain workflow constraints but must be refreshed from the current Rules page before final-submission tooling encodes them.
 
-## 9. Timeline — VERIFIED FROM CURRENT KAGGLE OVERVIEW
+## 11. Timeline — VERIFIED FROM CURRENT KAGGLE OVERVIEW
 
 All listed deadlines are 11:59 PM UTC unless Kaggle states otherwise:
 
@@ -146,46 +182,36 @@ All listed deadlines are 11:59 PM UTC unless Kaggle states otherwise:
 - Team merger deadline: 2026-09-22
 - Final submission deadline: 2026-09-29
 
-The organizer reserves the right to update the timeline. Any automation or final-submission plan must refresh this source rather than assume this snapshot remains current.
+The organizer reserves the right to update the timeline. Final-submission planning must refresh this source.
 
-## 10. Official baseline facts — VERIFIED
+## 12. Official baseline facts — VERIFIED
 
-The pinned official repository documents an end-to-end baseline:
+The pinned organizer repository documents an end-to-end baseline:
 
-- `TemporalUNet3D` for detection/features.
-- Local-max suppression for cell-center recovery.
-- `SimpleNodeTransformer` cross-attention linking of `(t, t+1)` node pairs.
-- Sparse supervision using GT edges while unannotated/background detections are ignored for training.
-- The public baseline training command used **3 epochs**.
-- Organizer README explicitly says the released public UNet baseline was **not trained to convergence**.
+- `TemporalUNet3D` for detection/features;
+- local-max suppression for cell-center recovery;
+- `SimpleNodeTransformer` cross-attention linking `(t, t+1)` nodes;
+- sparse supervision using GT edges while unannotated/background detections are ignored for training;
+- the released public baseline training command used **3 epochs**;
+- the organizer explicitly says that released model was **not trained to convergence**.
 
 This is a baseline fact, not a recommendation that we use this architecture.
 
-## 11. Known official metric-patch event — VERIFIED
+## 13. Known official metric-patch event — VERIFIED
 
-Kaggle host/staff announced a metric exploit and rescore; the pinned official evaluator revision above is the merge that patches the weakly-connected-component exploit. We therefore must never compare scores produced by unknown/older metric revisions as if they were directly equivalent.
+The competition host announced a division-metric exploit and rescore. The pinned organizer revision is the public patch. We therefore must never compare scores produced by unknown/older scorer revisions as if they were directly equivalent.
 
-## 12. UNRESOLVED — must not be silently assumed yet
+Host source:
+https://www.kaggle.com/competitions/biohub-cell-tracking-during-development/discussion/727154
 
-The following may be true based on prior research/community/host discussion, but Phase 0A deliberately does **not** encode them as implementation assumptions until their exact current provenance is pinned:
+## 14. UNRESOLVED — must not be silently assumed
 
-- Exact number and identity of training embryos.
-- Exact relationship/non-overlap of train and hidden-test embryo IDs.
-- Public/private leaderboard split proportions.
-- Max submissions per day, number of final submissions, and maximum team size.
-- Any implementation behavior not explicitly checked against the pinned metric code/tests (including graph sanitization and any out-degree handling beyond the documented fork definition).
-- Exact hidden-test size/distribution.
-- Community-reported acquisition pathologies (frozen/repeated frames, global jumps).
-- Provenance/clean-CV eligibility of public checkpoints and Kaggle notebook artifacts.
+- public/private leaderboard split proportions;
+- exact hidden-test dataset count and per-movie distribution beyond host statements above;
+- current max submissions/day, final-submission count, and team size until refreshed from the current Rules page for final tooling;
+- community-reported acquisition pathologies (frozen/repeated frames, sudden global motion) until reproduced on our own train inventory or pinned to a host statement;
+- provenance/clean-CV eligibility of public checkpoints and Kaggle notebook artifacts;
+- whether public-LB rank accurately predicts private-LB rank;
+- which pipeline layer (detection, candidates, association, topology/division) is currently our dominant recoverable error.
 
-These belong in provenance/validation research and must be promoted to VERIFIED only with a primary citation.
-
-## 13. Phase-0A acceptance rule
-
-Phase 0A passes only if:
-
-- repository contains no competition data or private credentials;
-- every factual competition assumption in the scaffold has an identifiable primary source;
-- uncertain facts are explicitly marked unresolved;
-- no model architecture has been prematurely selected;
-- the official evaluator revision is recorded but not reimplemented from memory.
+The last item is deliberately an experiment question. Architecture selection must wait for the bottleneck decomposition.
