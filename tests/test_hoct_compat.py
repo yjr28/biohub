@@ -39,8 +39,14 @@ def test_pins_upstream_state_and_does_not_claim_point_api_exists():
 @pytest.mark.parametrize(
     "kwargs, message",
     [
+        ({}, "exactly one"),
         ({"distance_threshold_um": 0}, "distance_threshold_um"),
         ({"distance_threshold_um": float("nan")}, "distance_threshold_um"),
+        ({"distance_threshold_voxels": 0}, "distance_threshold_voxels"),
+        (
+            {"distance_threshold_um": 5, "distance_threshold_voxels": 5},
+            "exactly one",
+        ),
         ({"distance_threshold_um": 5, "n_neighbors": 0}, "n_neighbors"),
         ({"distance_threshold_um": 5, "max_delta_t": 0}, "max_delta_t"),
         ({"distance_threshold_um": 5, "scale_zyx_um": (1.0, -1.0, 1.0)}, "scale_zyx_um"),
@@ -101,7 +107,7 @@ def test_preserves_canonical_fixed_detection_identity():
     assert graph.metadata["preserves_source_detection_id"] is True
 
 
-def test_candidate_radius_uses_anisotropic_physical_microns_not_voxel_distance():
+def test_candidate_radius_uses_anisotropic_physical_microns_when_requested():
     # t=1 node A is only one z voxel from t=0 source: 1.625 um, so a 1 um
     # radius must reject it. Node B is two x voxels away: 0.8125 um, so it must
     # be accepted even though its raw voxel displacement is larger.
@@ -120,6 +126,7 @@ def test_candidate_radius_uses_anisotropic_physical_microns_not_voxel_distance()
     assert graph.num_edges() == 1
     assert edge_times[0][0:2] == (0, 1)
     assert edge_times[0][2] == pytest.approx(0.8125)
+    assert graph.metadata["candidate_distance_space"] == "physical_um"
 
     wider = build_hoct_point_graph(
         points,
@@ -127,6 +134,27 @@ def test_candidate_radius_uses_anisotropic_physical_microns_not_voxel_distance()
     )
     distances = sorted(row[2] for row in _edge_times(wider))
     assert distances == pytest.approx([0.8125, 1.625])
+
+
+def test_native_voxel_space_reproduces_unscaled_candidate_geometry():
+    # Same geometry as the physical-distance test. In raw HOCT-native voxel
+    # space the z displacement is 1 voxel and x displacement is 2 voxels.
+    points = _points(
+        [
+            (0, 0.0, 0.0, 0.0),
+            (1, 1.0, 0.0, 0.0),
+            (1, 0.0, 0.0, 2.0),
+        ]
+    )
+    graph = build_hoct_point_graph(
+        points,
+        HOCTPointGraphConfig(distance_threshold_voxels=1.1, n_neighbors=2),
+    )
+    assert graph.num_edges() == 1
+    assert _edge_times(graph)[0][2] == pytest.approx(1.0)
+    assert graph.metadata["candidate_distance_space"] == "hoct_native_voxel"
+    assert graph.metadata["distance_threshold_voxels"] == pytest.approx(1.1)
+    assert graph.metadata["distance_threshold_um"] is None
 
 
 def test_max_delta_t_defaults_to_scored_consecutive_edges_only():

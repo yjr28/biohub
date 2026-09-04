@@ -20,11 +20,29 @@ The experiment starts from a frozen detector graph. `scripts/cache_fixed_detecti
 
 The resulting Parquet files are deterministic and content-hashed. `detection_id` is carried into the HOCT candidate graph as `source_detection_id`, so candidate/solution edges can be reconciled with the exact baseline nodes for official matching and bottleneck analysis.
 
-## Candidate geometry
+## Candidate geometry: two hypotheses, not one hidden assumption
 
-Candidate edges are generated in physical `(z, y, x)` coordinates using the per-dataset OME-Zarr scale from the Phase-2A inventory. This is deliberate: the Biohub data are anisotropic and a raw one-voxel z displacement is not equivalent to a raw one-voxel x/y displacement.
+The Biohub images are anisotropic, so physical distance and raw voxel distance are materially different. Our first adapter used physical `(z, y, x)` coordinates after multiplying by the OME-Zarr scale. That remains a valid, biologically motivated hypothesis.
 
-The primary compatibility experiment uses `max_delta_t=1`. The official Biohub evaluator directly retains only consecutive-frame edges, so longer-gap candidates are an explicit ablation rather than an accidental default.
+However, a source audit of public HOCT revealed an important implementation detail at the pinned revision: `hoct.features.create_graph(...)` accepts a `scale` argument and constructs temporary `scaled_t/scaled_z/scaled_y/scaled_x` columns, but those columns are not written back into the graph before `tracksdata.edges.DistanceEdges(...)` is called. The pinned `DistanceEdges` defaults to the graph's raw `z/y/x` attributes. Therefore the public HOCT candidate graph is, in practice, generated in **raw voxel space**, not physical microns.
+
+That distinction matters because the public pretrained model was developed around the upstream candidate-generation implementation. We therefore expose two explicit, separately logged candidate spaces:
+
+### `physical_um`
+
+Use `--distance-threshold-um`. Candidate search multiplies `(z,y,x)` by the per-dataset OME-Zarr spatial scale before KD-tree search.
+
+This is the biologically meaningful geometry and may generalize better across anisotropic data.
+
+### `hoct_native_voxel`
+
+Use `--distance-threshold-voxels`. Candidate search uses raw `(z,y,x)` coordinates, matching the candidate-distance convention of public HOCT at the audited revision.
+
+This is the fairest first test of the pretrained HOCT association model because it minimizes candidate-distribution shift relative to the public implementation.
+
+Neither mode is assumed superior. Candidate recall on fixed detections is measured before learned scoring, and both can be retained if their failure sets are complementary.
+
+The primary competition experiment keeps `max_delta_t=1`. Longer temporal-gap candidates are an explicit ablation rather than an accidental default.
 
 ## Missing segmentation features
 
@@ -33,6 +51,20 @@ HOCT's `FrameDataset` expects the region-property feature contract used by its p
 For the initial centroid-only ablation, the missing morphology/intensity dimensions are set to the public pretrained feature means from the pinned HOCT inference API. HOCT's own fixed standardization therefore maps those unknown dimensions to approximately zero. The real centroid coordinates and HOCT-compatible border-distance feature remain informative.
 
 This is an intentionally conservative ablation. It does **not** assert that mean-filled morphology is optimal. If the learned edge signal proves useful, image-derived features can be evaluated later as a separate causal change.
+
+## Public-package integration contract
+
+Unit tests against our own adapter are not enough. `.github/workflows/hoct-integration.yml` installs the exact audited public HOCT revision and runs `tests/integration/test_hoct_public_contract.py`.
+
+The integration test exercises the real public `hoct.predict(model, graph=...)` path through HOCT's `FrameDataset` and fixed `Standardize(_MEAN, _STD)` transform. It monkeypatches only the expensive model/ILP boundary, so no public weight download, Gurobi optimization, or competition data are required. The contract verifies that:
+
+- the adapter graph is accepted by the public package;
+- HOCT produces the expected 19-wide node feature tensor;
+- node/edge positions and edge indices have the expected dimensions;
+- all tensors are finite;
+- mean-filled unknown morphology/intensity dimensions standardize to approximately zero.
+
+A second characterization test constructs a tiny segmentation with a one-z-voxel displacement and an intentionally large physical z scale. Public HOCT still creates the edge with raw distance `1.0`, locking the raw-voxel candidate-space observation into CI so a future upstream change cannot silently invalidate our experiment design.
 
 ## Public checkpoints
 
@@ -54,7 +86,21 @@ python scripts/cache_fixed_detections.py \
   --out-dir artifacts/private/fixed_detections
 ```
 
-For one dataset and one precommitted candidate configuration:
+For one dataset and one precommitted candidate configuration, use exactly one candidate radius convention.
+
+Public-HOCT-native candidate geometry:
+
+```bash
+python scripts/build_hoct_candidate_graph.py \
+  --detections artifacts/private/fixed_detections/<dataset>.parquet \
+  --inventory artifacts/private/data/inventory.json \
+  --dataset <dataset> \
+  --distance-threshold-voxels <radius> \
+  --n-neighbors <k> \
+  --out artifacts/private/hoct_candidates/<dataset>.geff
+```
+
+Physical-micron candidate geometry:
 
 ```bash
 python scripts/build_hoct_candidate_graph.py \

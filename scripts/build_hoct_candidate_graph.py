@@ -14,13 +14,29 @@ from tracking_cellmot.io import save_graph
 
 def _args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build an anisotropic physical-distance HOCT candidate graph from fixed detections."
+        description=(
+            "Build a centroid-only HOCT candidate graph from fixed detections. "
+            "Choose either physical-micron geometry or the public HOCT raw-voxel candidate geometry."
+        )
     )
     parser.add_argument("--detections", required=True, type=Path, help="Canonical fixed-detection Parquet")
     parser.add_argument("--inventory", required=True, type=Path, help="Phase-2A inventory JSON")
     parser.add_argument("--dataset", required=True, help="Dataset stem represented by the cache")
     parser.add_argument("--out", required=True, type=Path, help="Output candidate .geff")
-    parser.add_argument("--distance-threshold-um", required=True, type=float)
+    distance = parser.add_mutually_exclusive_group(required=True)
+    distance.add_argument(
+        "--distance-threshold-um",
+        type=float,
+        help="Candidate radius after applying OME-Zarr anisotropic spatial scale.",
+    )
+    distance.add_argument(
+        "--distance-threshold-voxels",
+        type=float,
+        help=(
+            "Candidate radius in raw z/y/x coordinates, reproducing public HOCT's "
+            "pinned create_graph/DistanceEdges geometry."
+        ),
+    )
     parser.add_argument("--n-neighbors", type=int, default=5)
     parser.add_argument(
         "--max-delta-t",
@@ -66,6 +82,7 @@ def main() -> None:
     frame = load_detection_cache(detections)
     config = HOCTPointGraphConfig(
         distance_threshold_um=args.distance_threshold_um,
+        distance_threshold_voxels=args.distance_threshold_voxels,
         n_neighbors=args.n_neighbors,
         max_delta_t=args.max_delta_t,
         scale_zyx_um=scale,
@@ -77,7 +94,8 @@ def main() -> None:
     print(f"dataset={args.dataset}")
     print(f"detections={graph.num_nodes()}")
     print(f"candidate_edges={graph.num_edges()}")
-    print(f"distance_threshold_um={config.distance_threshold_um}")
+    print(f"candidate_distance_space={config.candidate_distance_space}")
+    print(f"candidate_distance_threshold={config.candidate_distance_threshold}")
     print(f"n_neighbors={config.n_neighbors}")
     print(f"max_delta_t={config.max_delta_t}")
     print(f"scale_zyx_um={config.scale_zyx_um}")

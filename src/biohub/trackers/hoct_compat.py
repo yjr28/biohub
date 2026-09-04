@@ -12,6 +12,22 @@ standardization those dimensions become zero, making this a clean
 "centroids-only" ablation rather than inventing pseudo-segmentation features.
 If this smoke test is useful, later experiments can replace these neutral values
 with image-derived features without changing candidate-node identity.
+
+Candidate generation deliberately supports two audited distance spaces:
+
+``physical_um``
+    Applies the Biohub OME-Zarr anisotropic scale before KD-tree search. This is
+    the biologically meaningful distance space and the one used by our original
+    adapter.
+
+``hoct_native_voxel``
+    Reproduces the public HOCT ``create_graph`` candidate-search geometry at the
+    pinned revision. Although that function accepts ``scale``, it constructs
+    ``DistanceEdges`` without passing scaled coordinate columns, and the pinned
+    tracksdata operator defaults to raw ``z/y/x``. This mode lets us test the
+    pretrained model under the candidate distribution closest to its public
+    implementation instead of silently assuming the scale argument affects edge
+    proposals.
 """
 
 from __future__ import annotations
@@ -56,20 +72,45 @@ class HOCTCompatibilityError(ValueError):
 class HOCTPointGraphConfig:
     """Candidate-generation settings for the centroid-only HOCT ablation.
 
-    Distances are always computed in physical microns. ``max_delta_t`` defaults
-    to one because the Biohub competition metric directly scores only edges
-    between consecutive frames.
+    Exactly one distance threshold must be supplied:
+
+    * ``distance_threshold_um`` searches in anisotropically scaled physical
+      microns.
+    * ``distance_threshold_voxels`` searches in raw ``z/y/x`` coordinates and
+      reproduces the public HOCT candidate-distance convention at
+      :data:`HOCT_REVISION`.
+
+    ``max_delta_t`` defaults to one because the Biohub competition directly
+    scores consecutive-frame edges. Gap candidates remain an explicit ablation.
     """
 
-    distance_threshold_um: float
+    distance_threshold_um: float | None = None
+    distance_threshold_voxels: float | None = None
     n_neighbors: int = 5
     max_delta_t: int = 1
     scale_zyx_um: tuple[float, float, float] = (1.625, 0.40625, 0.40625)
 
     def __post_init__(self) -> None:
-        radius = float(self.distance_threshold_um)
-        if not isfinite(radius) or radius <= 0:
-            raise HOCTCompatibilityError("distance_threshold_um must be finite and > 0")
+        supplied = [
+            self.distance_threshold_um is not None,
+            self.distance_threshold_voxels is not None,
+        ]
+        if sum(supplied) != 1:
+            raise HOCTCompatibilityError(
+                "supply exactly one of distance_threshold_um or distance_threshold_voxels"
+            )
+
+        if self.distance_threshold_um is not None:
+            radius = float(self.distance_threshold_um)
+            if not isfinite(radius) or radius <= 0:
+                raise HOCTCompatibilityError("distance_threshold_um must be finite and > 0")
+            object.__setattr__(self, "distance_threshold_um", radius)
+        else:
+            radius = float(self.distance_threshold_voxels)
+            if not isfinite(radius) or radius <= 0:
+                raise HOCTCompatibilityError("distance_threshold_voxels must be finite and > 0")
+            object.__setattr__(self, "distance_threshold_voxels", radius)
+
         if int(self.n_neighbors) != self.n_neighbors or self.n_neighbors < 1:
             raise HOCTCompatibilityError("n_neighbors must be an integer >= 1")
         if int(self.max_delta_t) != self.max_delta_t or self.max_delta_t < 1:
@@ -77,10 +118,24 @@ class HOCTPointGraphConfig:
         scale = tuple(float(value) for value in self.scale_zyx_um)
         if len(scale) != 3 or any(not isfinite(value) or value <= 0 for value in scale):
             raise HOCTCompatibilityError("scale_zyx_um must contain three finite positive values")
-        object.__setattr__(self, "distance_threshold_um", radius)
         object.__setattr__(self, "n_neighbors", int(self.n_neighbors))
         object.__setattr__(self, "max_delta_t", int(self.max_delta_t))
         object.__setattr__(self, "scale_zyx_um", scale)
+
+    @property
+    def candidate_distance_space(self) -> str:
+        """Return the audited coordinate space used for candidate generation."""
+
+        return "physical_um" if self.distance_threshold_um is not None else "hoct_native_voxel"
+
+    @property
+    def candidate_distance_threshold(self) -> float:
+        """Return the active radius in the units of ``candidate_distance_space``."""
+
+        if self.distance_threshold_um is not None:
+            return self.distance_threshold_um
+        assert self.distance_threshold_voxels is not None
+        return self.distance_threshold_voxels
 
 
 def _validated_points(points: pl.DataFrame) -> pl.DataFrame:
@@ -182,14 +237,20 @@ def _add_node_schema(graph: td.graph.InMemoryGraph, *, preserve_detection_id: bo
         graph.add_node_attr_key("source_detection_id", pl.Int64, -1)
 
 
+def _candidate_coordinates(points: pl.DataFrame, config: HOCTPointGraphConfig) -> np.ndarray:
+    coords = points.select("z", "y", "x").to_numpy().astype(np.float64)
+    if config.candidate_distance_space == "physical_um":
+        return coords * np.asarray(config.scale_zyx_um, dtype=np.float64)[None, :]
+    return coords
+
+
 def _candidate_edges(
     points: pl.DataFrame,
     node_ids: list[int],
     config: HOCTPointGraphConfig,
 ) -> list[dict]:
     times = points["t"].to_numpy()
-    coords = points.select("z", "y", "x").to_numpy().astype(np.float64)
-    physical = coords * np.asarray(config.scale_zyx_um, dtype=np.float64)[None, :]
+    candidate_coords = _candidate_coordinates(points, config)
     node_ids_arr = np.asarray(node_ids, dtype=np.int64)
 
     by_time: dict[int, np.ndarray] = {}
@@ -205,12 +266,12 @@ def _candidate_edges(
             source_idx = by_time.get(target_t - delta_t)
             if source_idx is None or source_idx.size == 0:
                 continue
-            tree = cKDTree(physical[source_idx])
+            tree = cKDTree(candidate_coords[source_idx])
             k = min(config.n_neighbors, int(source_idx.size))
             distances, neighbor_local = tree.query(
-                physical[target_idx],
+                candidate_coords[target_idx],
                 k=k,
-                distance_upper_bound=config.distance_threshold_um,
+                distance_upper_bound=config.candidate_distance_threshold,
             )
             distances = np.asarray(distances)
             neighbor_local = np.asarray(neighbor_local)
@@ -247,12 +308,13 @@ def build_hoct_point_graph(
 ) -> td.graph.InMemoryGraph:
     """Build a HOCT-compatible candidate graph from fixed Biohub centroids.
 
-    Candidate search uses anisotropic **physical** distance, not raw voxel
-    distance. All missing segmentation/intensity features are set to HOCT's
-    pretrained training means so HOCT standardization maps them to zero. If the
-    canonical ``detection_id`` column is supplied, it is preserved on each graph
-    node as ``source_detection_id`` so tracker outputs can be reconciled against
-    the exact same fixed detections.
+    Candidate search is explicit about its coordinate system: either anisotropic
+    physical microns or the public HOCT raw-voxel convention. All missing
+    segmentation/intensity features are set to HOCT's pretrained training means
+    so HOCT standardization maps them to zero. If the canonical ``detection_id``
+    column is supplied, it is preserved on each graph node as
+    ``source_detection_id`` so tracker outputs can be reconciled against the
+    exact same fixed detections.
 
     This function does not run HOCT, solve an ILP, or claim an official HOCT
     point-cloud inference path. It supplies a deterministic graph for the
@@ -279,7 +341,10 @@ def build_hoct_point_graph(
         biohub_adapter="centroid_only_hoct_compat",
         hoct_revision=HOCT_REVISION,
         hoct_upstream_point_api_implemented=False,
+        candidate_distance_space=config.candidate_distance_space,
+        candidate_distance_threshold=config.candidate_distance_threshold,
         distance_threshold_um=config.distance_threshold_um,
+        distance_threshold_voxels=config.distance_threshold_voxels,
         n_neighbors=config.n_neighbors,
         max_delta_t=config.max_delta_t,
         scale=(1.0, *config.scale_zyx_um),
