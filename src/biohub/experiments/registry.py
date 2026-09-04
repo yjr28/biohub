@@ -1,6 +1,6 @@
 """Fail-closed experiment provenance for private-leaderboard model selection.
 
-The registry is intentionally boring: JSON/JSONL plus strict validation.  The
+The registry is intentionally boring: JSON/JSONL plus strict validation. The
 purpose is to make it impossible to later confuse a contaminated validation run
 with a clean leave-one-embryo-out result or to lose the exact code/evaluator/data
 state that produced a score.
@@ -80,6 +80,7 @@ class ExperimentManifest:
     config: Mapping[str, Any]
     seeds: tuple[int, ...]
     leakage_controls: tuple[str, ...]
+    stochastic_control: str = "controlled"
     evaluator_commit: str = OFFICIAL_EVALUATOR_COMMIT
     tracksdata_commit: str = TRACKSDATA_COMMIT
     parent_experiment_id: str | None = None
@@ -101,8 +102,15 @@ class ExperimentManifest:
         validation_datasets = _clean_tuple(self.validation_datasets, "validation_datasets")
         leakage_controls = _clean_tuple(self.leakage_controls, "leakage_controls")
         seeds = tuple(sorted({int(seed) for seed in self.seeds}))
-        if not seeds:
-            raise ExperimentContractError("seeds cannot be empty")
+        stochastic_control = self.stochastic_control.strip().lower()
+        if stochastic_control not in {"controlled", "partial", "uncontrolled"}:
+            raise ExperimentContractError(
+                "stochastic_control must be one of: controlled, partial, uncontrolled"
+            )
+        if stochastic_control == "controlled" and not seeds:
+            raise ExperimentContractError(
+                "controlled stochastic runs must record at least one seed"
+            )
 
         if set(train_embryos) & set(validation_embryos):
             raise ExperimentContractError("train_embryos and validation_embryos must be disjoint")
@@ -138,6 +146,7 @@ class ExperimentManifest:
         object.__setattr__(self, "validation_datasets", validation_datasets)
         object.__setattr__(self, "leakage_controls", leakage_controls)
         object.__setattr__(self, "seeds", seeds)
+        object.__setattr__(self, "stochastic_control", stochastic_control)
         object.__setattr__(self, "config", dict(self.config))
 
     def to_dict(self) -> dict[str, Any]:
