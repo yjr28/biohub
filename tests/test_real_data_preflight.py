@@ -24,18 +24,29 @@ def _record(dataset: str, embryo: str, *, scale=(1.625, 0.40625, 0.40625), estim
     )
 
 
-def _test_record(dataset: str):
+def _test_record(dataset: str, *, has_geff: bool = False):
+    kwargs = {}
+    if has_geff:
+        kwargs = {
+            "gt_nodes": 100,
+            "gt_edges": 90,
+            "gt_divisions": 3,
+            "gt_t_min": 0,
+            "gt_t_max": 9,
+            "estimated_total_nodes": 1000.0,
+        }
     return DatasetRecord(
         split="visible_test",
         dataset=dataset,
         embryo_id=dataset.split("_", 1)[0],
         image_shape_tzyx=(10, 8, 16, 16),
         scale_zyx_um=(1.625, 0.40625, 0.40625),
-        has_geff=False,
+        has_geff=has_geff,
+        **kwargs,
     )
 
 
-def _report(*, train=None, overlap=()):
+def _report(*, train=None, overlap=(), visible_test=None):
     train = tuple(train or (_record("E1_a", "E1"), _record("E1_b", "E1"), _record("E2_a", "E2")))
     names = tuple(record.dataset for record in train)
     embryos = tuple(sorted({record.embryo_id for record in train}))
@@ -43,12 +54,13 @@ def _report(*, train=None, overlap=()):
     # ask the stricter LOEO constructor to fail before the real-data gate itself
     # is exercised.  The gate checks embryo cardinality before inspecting folds.
     folds = tuple(asdict(fold) for fold in build_loeo_folds(names)) if len(embryos) == 2 else ()
+    visible_test = tuple(visible_test or (_test_record("TEST_0"),))
     return InventoryReport(
         competition_root="/kaggle/input/competitions/biohub-cell-tracking-during-development",
         train=train,
-        visible_test=(_test_record("TEST_0"),),
+        visible_test=visible_test,
         train_embryos=embryos,
-        visible_test_embryos=("TEST",),
+        visible_test_embryos=tuple(sorted({record.embryo_id for record in visible_test})),
         train_visible_test_name_overlap=tuple(overlap),
         loeo_folds=folds,
     )
@@ -81,9 +93,25 @@ def test_rejects_missing_estimated_node_count():
         validate_real_inventory(_report(train=train))
 
 
-def test_rejects_train_visible_test_name_overlap():
-    with pytest.raises(RealDataGateError, match="name overlap"):
-        validate_real_inventory(_report(overlap=("E1_a",)))
+def test_accepts_gt_free_visible_test_placeholder_name_overlap_with_warning():
+    gate = validate_real_inventory(
+        _report(
+            overlap=("E1_a",),
+            visible_test=(_test_record("E1_a", has_geff=False),),
+        )
+    )
+    assert gate.accepted
+    assert any("placeholder dataset IDs overlap training IDs" in warning for warning in gate.warnings)
+
+
+def test_rejects_visible_test_name_overlap_if_gt_is_exposed():
+    with pytest.raises(RealDataGateError, match="overlap exposes GT"):
+        validate_real_inventory(
+            _report(
+                overlap=("E1_a",),
+                visible_test=(_test_record("E1_a", has_geff=True),),
+            )
+        )
 
 
 def test_warns_if_coarse_total_is_below_sparse_gt_count():
