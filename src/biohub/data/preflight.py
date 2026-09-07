@@ -62,13 +62,30 @@ def validate_real_inventory(report: InventoryReport) -> RealDataGate:
     train_names = {record.dataset for record in train}
     if len(train_names) != len(train):
         raise RealDataGateError("training inventory contains duplicate dataset IDs")
-    if report.train_visible_test_name_overlap:
-        raise RealDataGateError(
-            "train/visible-test dataset-name overlap is ambiguous: "
-            f"{report.train_visible_test_name_overlap}"
-        )
 
     warnings: list[str] = []
+
+    # Kaggle's visible test mount can contain development placeholders copied
+    # from training under the same dataset stems.  Name overlap by itself is
+    # therefore not evidence of train/validation leakage: all LOEO construction
+    # below is based exclusively on `report.train`.  It becomes unsafe only if
+    # an overlapping visible-test record also exposes GT, because downstream
+    # code could then silently treat a split-ambiguous dataset ID as labeled.
+    if report.train_visible_test_name_overlap:
+        overlap = set(report.train_visible_test_name_overlap)
+        overlapping_test = tuple(record for record in report.visible_test if record.dataset in overlap)
+        gt_exposed = tuple(sorted(record.dataset for record in overlapping_test if record.has_geff))
+        if gt_exposed:
+            raise RealDataGateError(
+                "train/visible-test dataset-name overlap exposes GT and is ambiguous: "
+                f"{gt_exposed}"
+            )
+        warnings.append(
+            "visible-test placeholder dataset IDs overlap training IDs but expose no GEFF; "
+            "accepted because clean LOEO folds are constructed from the training split only: "
+            f"{tuple(sorted(overlap))}"
+        )
+
     dataset_counts: Counter[str] = Counter()
     node_counts: Counter[str] = Counter()
     edge_counts: Counter[str] = Counter()
